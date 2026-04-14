@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker exec:*)",
+      "Read(//opt/lega-test/**)",
+      "Bash(docker compose:*)",
+      "Bash(curl -s http://localhost:8002/api/health)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s http://localhost:8002/api/agents/registry)",
+      "Bash(curl -s http://localhost:8002/api/monitoring)",
+      "Bash(git init:*)",
+      "Bash(git config:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

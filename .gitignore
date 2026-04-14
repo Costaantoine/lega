@@ -1,0 +1,48 @@
+# === Dépendances ===
+node_modules/
+.pnpm-store/
+
+# === Next.js ===
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# === Variables d'environnement ===
+.env
+.env.local
+.env.production
+.env.client
+
+# === Données sensibles ===
+knowledge_base.json
+knowledge_base.json.backup
+bvi_db_backup.sql
+
+# === Uploads ===
+uploads/
+
+# === Fichiers système ===
+.DS_Store
+Thumbs.db
+*.log
+
+# === Backups / temp ===
+*.bak
+*.broken
+*.backup
+main.py.bak
+main.py.broken
+page.tsx.bak
