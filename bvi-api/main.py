@@ -5,6 +5,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import aiofiles
@@ -25,6 +26,12 @@ DB_URL = os.getenv("DATABASE_URL", "postgresql://bvi_user:BviSecure2026!@bvi-db:
 OLLAMA_URL = os.getenv("OLLAMA_BASE_URL", "http://172.17.0.1:11434")
 TONY_MODEL = "gemma2:2b"
 AGENT_MODEL = "gemma4:e2b"
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# Agents nécessitant un abonnement
+PREMIUM_AGENTS = {"max_search", "sam_comms", "visa_vision"}
 
 app = FastAPI(title="LEGA/BVI API", version="1.0.0")
 app.mount("/uploads", StaticFiles(directory="/app/uploads"), name="uploads")
@@ -94,6 +101,70 @@ EXEMPLES:
 - "Relance M. Dupont pour devis" → email_followup, sam_comms, "45-90 secondes"
 - "Bonjour que peux-tu faire" → general_chat, agent=null, direct_response="Je suis Tony..."
 - "Olá o que fazes?" → general_chat, lang=pt, direct_response en PT-PT"""
+
+
+async def notify_telegram(text: str) -> None:
+    """Envoie une notification Telegram à l'admin."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("Telegram non configuré (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID manquants)")
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
+            )
+    except Exception as e:
+        logger.warning(f"Telegram notification failed: {e}")
+
+
+async def get_or_create_user(session_id: str) -> str:
+    """Retourne l'user_id lié à la session, le crée si absent."""
+    conn = await db_connect()
+    try:
+        row = await conn.fetchrow("SELECT id FROM users WHERE session_id=$1", session_id)
+        if row:
+            return row["id"]
+        row = await conn.fetchrow(
+            "INSERT INTO users (session_id) VALUES ($1) ON CONFLICT (session_id) DO UPDATE SET session_id=EXCLUDED.session_id RETURNING id",
+            session_id,
+        )
+        return row["id"]
+    finally:
+        await conn.close()
+
+
+async def check_subscription(user_id: str, agent_name: str) -> str | None:
+    """Retourne le statut d'abonnement ou None si pas de ligne. 'expired' si trial périmé."""
+    conn = await db_connect()
+    try:
+        row = await conn.fetchrow(
+            "SELECT status, trial_expires_at FROM user_subscriptions WHERE user_id=$1 AND agent_name=$2",
+            user_id, agent_name,
+        )
+    finally:
+        await conn.close()
+    if not row:
+        return None
+    if row["status"] == "trial" and row["trial_expires_at"]:
+        if row["trial_expires_at"] < datetime.now(timezone.utc):
+            return "expired"
+    return row["status"]
+
+
+async def activate_trial(user_id: str, agent_name: str) -> None:
+    """Active un trial 24h pour cet agent."""
+    conn = await db_connect()
+    try:
+        await conn.execute(
+            """INSERT INTO user_subscriptions (user_id, agent_name, status, activated_at, trial_expires_at)
+               VALUES ($1, $2, 'trial', NOW(), NOW() + INTERVAL '24 hours')
+               ON CONFLICT (user_id, agent_name) DO UPDATE
+               SET status='trial', activated_at=NOW(), trial_expires_at=NOW() + INTERVAL '24 hours'""",
+            user_id, agent_name,
+        )
+    finally:
+        await conn.close()
 
 
 async def tony_classify(message: str) -> dict:
@@ -338,10 +409,29 @@ async def task_worker():
         await asyncio.sleep(10)
 
 
+async def trial_expiry_cron():
+    """Expire les trials toutes les heures."""
+    logger.info("Trial expiry cron started")
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            conn = await db_connect()
+            result = await conn.execute(
+                "UPDATE user_subscriptions SET status='expired' WHERE status='trial' AND trial_expires_at < NOW()"
+            )
+            expired_count = int(result.split()[-1]) if result else 0
+            if expired_count:
+                logger.info(f"Trial expiry cron: {expired_count} trial(s) expirés")
+            await conn.close()
+        except Exception as e:
+            logger.error(f"Trial expiry cron error: {e}")
+
+
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(task_worker())
-    logger.info("LEGA API v1.0 started — Tony + Worker online")
+    asyncio.create_task(trial_expiry_cron())
+    logger.info("LEGA API v1.0 started — Tony + Worker + Trial cron online")
 
 
 # ── WebSocket ────────────────────────────────────────────────────────────────
@@ -351,7 +441,8 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     session_id = str(uuid.uuid4())
     active_connections[session_id] = ws
-    logger.info(f"WS connected: {session_id}")
+    user_id = await get_or_create_user(session_id)
+    logger.info(f"WS connected: {session_id} (user {user_id[:8]})")
 
     try:
         await ws.send_json({
@@ -393,12 +484,76 @@ async def websocket_endpoint(ws: WebSocket):
                 })
 
             else:
-                # Agent requis → ack immédiat + tâche async
+                # Agent requis → vérifier abonnement si premium
                 latency_map = {"max_search": 180, "sam_comms": 90, "visa_vision": 10}
                 estimated = latency_map.get(agent, 120)
 
+                if agent in PREMIUM_AGENTS:
+                    sub_status = await check_subscription(user_id, agent)
+
+                    if sub_status not in ("active", "trial"):
+                        # Pas abonné ou trial expiré → activer trial auto + notifier admin
+                        is_renewal = sub_status == "expired"
+                        await activate_trial(user_id, agent)
+                        logger.info(f"Trial activé: user {user_id[:8]} → {agent}")
+
+                        # Message upsell / trial activé
+                        if lang == "pt":
+                            upsell = (
+                                f"🎯 O agente <b>{agent}</b> é premium.\n\n"
+                                f"✅ Ativei um <b>trial gratuito de 24h</b> para si!\n"
+                                f"A processar o seu pedido agora...\n\n"
+                                f"💡 Para acesso permanente: <b>49€/mês</b>. Contacte-nos."
+                            ) if not is_renewal else (
+                                f"🔄 O seu trial anterior expirou.\n"
+                                f"✅ Novo trial de 24h ativado! A processar...\n\n"
+                                f"💡 Acesso permanente: <b>49€/mês</b>."
+                            )
+                        else:
+                            upsell = (
+                                f"🎯 L'agent <b>{agent}</b> est premium.\n\n"
+                                f"✅ J'active un <b>trial gratuit 24h</b> pour vous !\n"
+                                f"Je traite votre demande maintenant...\n\n"
+                                f"💡 Accès permanent : <b>49€/mois</b>. Contactez-nous."
+                            ) if not is_renewal else (
+                                f"🔄 Votre trial précédent a expiré.\n"
+                                f"✅ Nouveau trial 24h activé ! Je traite votre demande...\n\n"
+                                f"💡 Accès permanent : <b>49€/mois</b>."
+                            )
+
+                        await ws.send_json({
+                            "type": "agent_response",
+                            "payload": upsell,
+                            "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "trial_activated"},
+                        })
+
+                        # Notification Telegram admin
+                        tg_msg = (
+                            f"🆕 <b>Trial activé</b>\n"
+                            f"Agent : <code>{agent}</code>\n"
+                            f"Session : <code>{session_id[:12]}</code>\n"
+                            f"Message : {user_msg[:200]}\n"
+                            f"Langue : {lang}\n"
+                            f"Renouvellement : {'oui' if is_renewal else 'non'}"
+                        )
+                        asyncio.create_task(notify_telegram(tg_msg))
+
+                        # Enregistrer en activation_requests pour suivi admin
+                        try:
+                            conn_act = await db_connect()
+                            await conn_act.execute(
+                                """INSERT INTO activation_requests (session_id, agent_name, user_message, status)
+                                   VALUES ($1, $2, $3, 'approved')""",
+                                session_id, agent, user_msg[:500],
+                            )
+                            await conn_act.close()
+                        except Exception as e:
+                            logger.warning(f"activation_requests insert failed: {e}")
+
                 ack = classification.get("ack_message") or (
                     f"✅ Je délègue à {agent}... Résultat dans {classification.get('estimated_delay','quelques minutes')}."
+                    if lang != "pt" else
+                    f"✅ A delegar para {agent}... Resultado em {classification.get('estimated_delay','alguns minutos')}."
                 )
                 await ws.send_json({
                     "type": "agent_response",

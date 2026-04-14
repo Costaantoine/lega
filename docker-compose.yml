@@ -34,6 +34,8 @@ services:
       DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL}
       JWT_SECRET: ${JWT_SECRET}
       LOG_LEVEL: INFO
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
