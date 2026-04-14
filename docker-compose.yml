@@ -36,6 +36,8 @@ services:
       LOG_LEVEL: INFO
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      SITE_MANAGEMENT_MODE: ${SITE_MANAGEMENT_MODE:-manual}
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

@@ -33,6 +33,10 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # Agents nécessitant un abonnement
 PREMIUM_AGENTS = {"max_search", "sam_comms", "visa_vision"}
 
+# Mode gestion site : "agent" (automatique) ou "manual" (dashboard)
+SITE_MANAGEMENT_MODE = os.getenv("SITE_MANAGEMENT_MODE", "manual")
+AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
+
 app = FastAPI(title="LEGA/BVI API", version="1.0.0")
 app.mount("/uploads", StaticFiles(directory="/app/uploads"), name="uploads")
 app.add_middleware(
@@ -68,6 +72,13 @@ class ProductUpdate(BaseModel):
     attributes: dict = None
     images: list = None
     status: str = None
+
+class AgentSiteAction(BaseModel):
+    action: str          # create | update | delete | publish | unpublish
+    product_id: int = None
+    data: dict = {}      # champs produit pour create/update
+    reason: str = ""     # justification de l'action (pour logs)
+    agent_name: str = "" # agent émetteur
 
 
 # ── Tony prompt ──────────────────────────────────────────────────────────────
@@ -1108,3 +1119,133 @@ async def review_activation(activation_id: int, request: dict):
         raise
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ── Agent Site Management ─────────────────────────────────────────────────────
+
+@app.post("/api/agent/manage-site")
+async def agent_manage_site(action: AgentSiteAction, x_agent_key: str = None):
+    """
+    Endpoint réservé aux agents pour modifier le site automatiquement.
+    Actif uniquement si SITE_MANAGEMENT_MODE=agent.
+    Authentification par param x_agent_key (ou header X-Agent-Key à venir).
+    """
+    # Vérifier le mode
+    if SITE_MANAGEMENT_MODE != "agent":
+        raise HTTPException(
+            403,
+            detail={
+                "error": "mode_manual",
+                "message": "Le site est en mode gestion manuelle. Passez SITE_MANAGEMENT_MODE=agent pour activer les modifications automatiques.",
+                "current_mode": SITE_MANAGEMENT_MODE,
+            }
+        )
+
+    # Vérifier la clé API agent
+    if AGENT_API_KEY and x_agent_key != AGENT_API_KEY:
+        raise HTTPException(401, detail={"error": "invalid_key", "message": "Clé API agent invalide."})
+
+    conn = await db_connect()
+    try:
+        result_data = {}
+
+        if action.action == "create":
+            required = ["title", "price"]
+            missing = [f for f in required if not action.data.get(f)]
+            if missing:
+                raise HTTPException(400, detail={"error": "missing_fields", "fields": missing})
+            row = await conn.fetchrow(
+                """INSERT INTO products (title, description, price, currency, category, attributes, images, status, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',NOW()) RETURNING id""",
+                action.data.get("title"), action.data.get("description", ""),
+                float(action.data.get("price", 0)), action.data.get("currency", "€"),
+                action.data.get("category", "tp"),
+                json.dumps(action.data.get("attributes", {})),
+                json.dumps(action.data.get("images", [])),
+            )
+            result_data = {"id": row["id"], "status": "draft"}
+
+        elif action.action == "update":
+            if not action.product_id:
+                raise HTTPException(400, detail={"error": "missing_product_id"})
+            fields, params = [], [action.product_id]
+            for f in ["title", "description", "currency", "category", "status"]:
+                if f in action.data:
+                    fields.append(f"{f}=${len(params)+1}"); params.append(action.data[f])
+            if "price" in action.data:
+                fields.append(f"price=${len(params)+1}"); params.append(float(action.data["price"]))
+            for f in ["attributes", "images"]:
+                if f in action.data:
+                    fields.append(f"{f}=${len(params)+1}"); params.append(json.dumps(action.data[f]))
+            if not fields:
+                raise HTTPException(400, detail={"error": "no_fields_to_update"})
+            fields.append("updated_at=NOW()")
+            row = await conn.fetchrow(
+                f"UPDATE products SET {','.join(fields)} WHERE id=$1 RETURNING id, status", *params
+            )
+            if not row:
+                raise HTTPException(404, detail={"error": "product_not_found"})
+            result_data = {"id": row["id"], "status": row["status"]}
+
+        elif action.action == "delete":
+            if not action.product_id:
+                raise HTTPException(400, detail={"error": "missing_product_id"})
+            await conn.execute(
+                "UPDATE products SET status='archived', updated_at=NOW() WHERE id=$1", action.product_id
+            )
+            result_data = {"id": action.product_id, "status": "archived"}
+
+        elif action.action == "publish":
+            if not action.product_id:
+                raise HTTPException(400, detail={"error": "missing_product_id"})
+            row = await conn.fetchrow(
+                "UPDATE products SET status='published', updated_at=NOW() WHERE id=$1 RETURNING id, title", action.product_id
+            )
+            if not row:
+                raise HTTPException(404, detail={"error": "product_not_found"})
+            result_data = {"id": row["id"], "title": row["title"], "status": "published"}
+
+        elif action.action == "unpublish":
+            if not action.product_id:
+                raise HTTPException(400, detail={"error": "missing_product_id"})
+            row = await conn.fetchrow(
+                "UPDATE products SET status='draft', updated_at=NOW() WHERE id=$1 RETURNING id, title", action.product_id
+            )
+            if not row:
+                raise HTTPException(404, detail={"error": "product_not_found"})
+            result_data = {"id": row["id"], "title": row["title"], "status": "draft"}
+
+        else:
+            raise HTTPException(400, detail={"error": "unknown_action", "valid_actions": ["create","update","delete","publish","unpublish"]})
+
+    finally:
+        await conn.close()
+
+    # Notification Telegram
+    tg_msg = (
+        f"🤖 <b>Action agent site</b>\n"
+        f"Action : <code>{action.action}</code>\n"
+        f"Agent : <code>{action.agent_name or 'inconnu'}</code>\n"
+        f"Produit ID : {action.product_id or result_data.get('id', '—')}\n"
+        f"Résultat : {result_data}\n"
+        f"Raison : {action.reason or '—'}"
+    )
+    asyncio.create_task(notify_telegram(tg_msg))
+    logger.info(f"Agent site action: {action.action} → {result_data}")
+
+    return {
+        "status": "ok",
+        "action": action.action,
+        "mode": SITE_MANAGEMENT_MODE,
+        "result": result_data,
+    }
+
+
+@app.get("/api/agent/manage-site/mode")
+async def get_site_mode():
+    """Retourne le mode de gestion actuel du site."""
+    return {
+        "mode": SITE_MANAGEMENT_MODE,
+        "agent_enabled": SITE_MANAGEMENT_MODE == "agent",
+        "description": "Gestion automatique par agents" if SITE_MANAGEMENT_MODE == "agent" else "Gestion manuelle via dashboard",
+    }
