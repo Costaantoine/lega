@@ -12,7 +12,7 @@ export default function AddSource() {
     e.preventDefault();
     setStatus('loading');
     try {
-      const res = await fetch('http://localhost:8002/api/sources/add', {
+      const res = await fetch('http://76.13.141.221:8002/api/sources/add', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ url, category, region, added_by: 'dashboard' })
@@ -33,32 +33,48 @@ export default function AddSource() {
   };
 
   return (
-    <div className="p-4 border rounded-lg bg-white dark:bg-gray-800">
-      <h3 className="font-bold mb-3">Ajouter une source</h3>
-      <form onSubmit={handleSubmit} className="space-y-3">
-        <input type="url" placeholder="https://exemple.com" value={url} 
-          onChange={(e) => setUrl(e.target.value)} required
-          className="w-full p-2 border rounded dark:bg-gray-700"/>
-        <div className="flex gap-2">
-          <select value={category} onChange={(e) => setCategory(e.target.value)}
-            className="p-2 border rounded dark:bg-gray-700">
+    <div style={{ padding: 16, border: '1px solid #334155', borderRadius: 8, background: '#0f172a' }}>
+      <h3 style={{ margin: '0 0 12px', fontWeight: 700, fontSize: 15, color: '#f8fafc' }}>Ajouter une source</h3>
+      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <input
+          type="url"
+          placeholder="https://exemple.com"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          required
+          style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#f8fafc', fontSize: 14, boxSizing: 'border-box', outline: 'none' }}
+        />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            style={{ padding: '7px 10px', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#f8fafc', fontSize: 14 }}
+          >
             <option value="constructeur">Constructeur</option>
             <option value="loueur">Loueur</option>
             <option value="plateforme">Plateforme</option>
           </select>
-          <select value={region} onChange={(e) => setRegion(e.target.value)}
-            className="p-2 border rounded dark:bg-gray-700">
+          <select
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+            style={{ padding: '7px 10px', borderRadius: 6, border: '1px solid #334155', background: '#1e293b', color: '#f8fafc', fontSize: 14 }}
+          >
             <option value="bordeaux">Bordeaux</option>
             <option value="pt">Portugal</option>
             <option value="europe">Europe</option>
           </select>
         </div>
-        <button type="submit" disabled={status==='loading'}
-          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">
-          {status==='loading' ? '...' : 'Ajouter'}
+        <button
+          type="submit"
+          disabled={status === 'loading'}
+          style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#3b82f6', color: '#fff', cursor: status === 'loading' ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 600, opacity: status === 'loading' ? 0.5 : 1 }}
+        >
+          {status === 'loading' ? '...' : 'Ajouter'}
         </button>
       </form>
-      {message && <p className={'mt-2 text-sm ' + (status==='error' ? 'text-red-500' : 'text-green-600')}>{message}</p>}
+      {message && (
+        <p style={{ marginTop: 8, fontSize: 13, color: status === 'error' ? '#f87171' : '#4ade80' }}>{message}</p>
+      )}
     </div>
   );
 }

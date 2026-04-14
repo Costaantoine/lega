@@ -36,7 +36,7 @@ export default function SourceManager() {
         setStatus('success');
         setMessage('✅ Source ajoutée');
         setForm({ url: '', category: 'plateforme', region: 'europe' });
-        fetchSources(); // Refresh list
+        fetchSources();
       } else {
         setStatus('error');
         setMessage('⚠️ ' + (data.message || 'Erreur'));
@@ -64,50 +64,71 @@ export default function SourceManager() {
   };
 
   return (
-    <div className="p-4 border rounded-lg bg-white dark:bg-gray-800 space-y-4">
-      <h3 className="font-bold text-lg">Gestion des sources</h3>
-      
+    <div style={{ padding: 16, border: '1px solid #334155', borderRadius: 8, background: '#0f172a', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <h3 style={{ margin: 0, fontWeight: 700, fontSize: 16, color: '#f8fafc' }}>Gestion des sources</h3>
+
       {/* Formulaire d'ajout */}
-      <form onSubmit={handleSubmit} className="space-y-3 p-3 bg-gray-50 dark:bg-gray-700 rounded">
-        <input type="url" placeholder="https://exemple.com" value={form.url} 
-          onChange={(e) => setForm({...form, url: e.target.value})} required
-          className="w-full p-2 border rounded dark:bg-gray-600"/>
-        <div className="flex gap-2">
-          <select value={form.category} onChange={(e) => setForm({...form, category: e.target.value})}
-            className="p-2 border rounded dark:bg-gray-600">
+      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 12, background: '#1e293b', borderRadius: 8 }}>
+        <input
+          type="url"
+          placeholder="https://exemple.com"
+          value={form.url}
+          onChange={(e) => setForm({...form, url: e.target.value})}
+          required
+          style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#f8fafc', fontSize: 14, boxSizing: 'border-box', outline: 'none' }}
+        />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <select
+            value={form.category}
+            onChange={(e) => setForm({...form, category: e.target.value})}
+            style={{ padding: '7px 10px', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#f8fafc', fontSize: 14 }}
+          >
             <option value="constructeur">Constructeur</option>
             <option value="loueur">Loueur</option>
             <option value="plateforme">Plateforme</option>
           </select>
-          <select value={form.region} onChange={(e) => setForm({...form, region: e.target.value})}
-            className="p-2 border rounded dark:bg-gray-600">
+          <select
+            value={form.region}
+            onChange={(e) => setForm({...form, region: e.target.value})}
+            style={{ padding: '7px 10px', borderRadius: 6, border: '1px solid #334155', background: '#0f172a', color: '#f8fafc', fontSize: 14 }}
+          >
             <option value="bordeaux">Bordeaux</option>
             <option value="pt">Portugal</option>
             <option value="europe">Europe</option>
           </select>
         </div>
-        <button type="submit" disabled={status==='loading'}
-          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">
-          {status==='loading' ? '...' : '+ Ajouter'}
+        <button
+          type="submit"
+          disabled={status === 'loading'}
+          style={{ alignSelf: 'flex-start', padding: '8px 16px', borderRadius: 6, border: 'none', background: '#3b82f6', color: '#fff', cursor: status === 'loading' ? 'not-allowed' : 'pointer', fontSize: 14, fontWeight: 600, opacity: status === 'loading' ? 0.5 : 1 }}
+        >
+          {status === 'loading' ? '...' : '+ Ajouter'}
         </button>
       </form>
-      {message && <p className={`text-sm ${status==='error'?'text-red-500':'text-green-600'}`}>{message}</p>}
+
+      {message && (
+        <p style={{ margin: 0, fontSize: 13, color: status === 'error' ? '#f87171' : '#4ade80' }}>{message}</p>
+      )}
 
       {/* Liste des sources */}
       <div>
-        <h4 className="font-semibold mb-2">Sources actives ({sources.length})</h4>
-        {loadingList ? <p className="text-gray-500">Chargement...</p> : (
-          <ul className="space-y-2 max-h-60 overflow-y-auto">
+        <h4 style={{ margin: '0 0 8px', fontWeight: 600, fontSize: 14, color: '#cbd5e1' }}>Sources actives ({sources.length})</h4>
+        {loadingList ? (
+          <p style={{ color: '#64748b', fontSize: 13 }}>Chargement...</p>
+        ) : (
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 280, overflowY: 'auto' }}>
             {sources.map(s => (
-              <li key={s.id} className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-700 rounded text-sm">
-                <div className="flex-1 min-w-0">
-                  <a href={s.url} target="_blank" rel="noopener" className="text-blue-600 hover:underline truncate block">
+              <li key={s.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', background: '#1e293b', borderRadius: 6, fontSize: 13 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <a href={s.url} target="_blank" rel="noopener" style={{ color: '#60a5fa', textDecoration: 'none', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {s.url}
                   </a>
-                  <span className="text-xs text-gray-500">{s.category} • {s.region} • {s.added_by}</span>
+                  <span style={{ fontSize: 11, color: '#64748b' }}>{s.category} • {s.region} • {s.added_by}</span>
                 </div>
-                <button onClick={() => handleDelete(s.id, s.url)}
-                  className="ml-2 px-2 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 text-xs">
+                <button
+                  onClick={() => handleDelete(s.id, s.url)}
+                  style={{ marginLeft: 10, padding: '4px 8px', background: '#450a0a', color: '#f87171', border: '1px solid #7f1d1d', borderRadius: 4, cursor: 'pointer', fontSize: 13, flexShrink: 0 }}
+                >
                   🗑️
                 </button>
               </li>
