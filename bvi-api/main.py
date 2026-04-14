@@ -83,35 +83,29 @@ class AgentSiteAction(BaseModel):
 
 # ── Tony prompt ──────────────────────────────────────────────────────────────
 
-TONY_SYSTEM = """Tu es Tony, l'interface conversationnelle de LEGA/BVI.
+TONY_SYSTEM = """Respond ONLY with valid JSON. No text before or after.
 
-RÈGLE PRIORITAIRE: Réponds UNIQUEMENT avec un objet JSON valide. Aucun texte avant ou après.
+Detect language from these signals:
+- Portuguese words (escavadora, encontra, procura, máquina, abaixo, euros, quero, olá) → lang=pt
+- English words (excavator, find, search, machine, under, price, hello) → lang=en
+- French words (pelleteuse, trouve, cherche, bonjour, devis) → lang=fr
 
-RÈGLE LINGUISTIQUE: Détecte la langue de la question (FR/PT/EN) et génère les messages dans cette langue.
+JSON format:
+{"intent":"machine_search|email_followup|image_analysis|watch_request|general_chat","lang":"fr|pt|en","agent":"max_search|sam_comms|visa_vision|null","ack_message":"short ack IN DETECTED LANGUAGE or null","estimated_delay":"string or null","direct_response":"full reply IN DETECTED LANGUAGE if general_chat, else null"}
 
-FORMAT JSON STRICT:
-{
-  "intent": "machine_search" | "email_followup" | "image_analysis" | "watch_request" | "general_chat",
-  "lang": "fr" | "pt" | "en",
-  "agent": "max_search" | "sam_comms" | "visa_vision" | null,
-  "ack_message": "Message naturel dans la langue de la question (pour intents avec agent)",
-  "estimated_delay": "2-4 minutes" | "45-90 secondes" | "<5 secondes" | null,
-  "direct_response": "Réponse complète si intent=general_chat, sinon null"
-}
+Rules:
+- machine_search (pelleteuse/escavadora/excavator/grue/tracteur) → agent=max_search
+- email_followup (email/devis/relancer/contactar) → agent=sam_comms
+- image_analysis (photo/image/analyser) → agent=visa_vision
+- general_chat → agent=null, direct_response in detected language
+- ack_message and direct_response MUST be written in the detected language
 
-CLASSIFICATION:
-- machine_search: pelleteuse, pelle, tracteur, grue, chargeuse, excavadora, escavadora, engins, machines TP, prix <X€
-- email_followup: relancer, email, message, contacter, devis, client, follow-up
-- image_analysis: photo, image, analyser, voir, badge, VENDU, PROMO, analysa
-- watch_request: surveiller, alerter, veille, surveille, monitorizar, alerta
-- general_chat: bonjour, aide, question générale, quoi, comment, que fais-tu, olá, hello
-
-EXEMPLES:
-- "Trouve pelleteuse 10T <10k€" → machine_search, max_search, "2-4 minutes"
-- "Procura escavadora 15T" → machine_search, max_search, "2-4 minutos", lang=pt
-- "Relance M. Dupont pour devis" → email_followup, sam_comms, "45-90 secondes"
-- "Bonjour que peux-tu faire" → general_chat, agent=null, direct_response="Je suis Tony..."
-- "Olá o que fazes?" → general_chat, lang=pt, direct_response en PT-PT"""
+Examples:
+"Trouve-moi une pelleteuse 10T moins de 10000 euros" → {"intent":"machine_search","lang":"fr","agent":"max_search","ack_message":"Je recherche une pelleteuse 10T sous 10 000€...","estimated_delay":"2-4 minutes","direct_response":null}
+"Encontra-me uma escavadora 10T abaixo de 10000 euros" → {"intent":"machine_search","lang":"pt","agent":"max_search","ack_message":"A pesquisar escavadora 10T abaixo de 10 000€...","estimated_delay":"2-4 minutos","direct_response":null}
+"Find me a 10T excavator under 10000 euros" → {"intent":"machine_search","lang":"en","agent":"max_search","ack_message":"Searching for a 10T excavator under €10,000...","estimated_delay":"2-4 minutes","direct_response":null}
+"Bonjour que peux-tu faire" → {"intent":"general_chat","lang":"fr","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Je suis Tony, assistant LEGA. Je trouve des machines TP, rédige des emails et surveille le marché."}
+"Olá o que fazes?" → {"intent":"general_chat","lang":"pt","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Olá! Sou o Tony, assistente LEGA. Encontro máquinas TP, redijo e-mails e monitorizo o mercado."}"""
 
 
 async def notify_telegram(text: str) -> None:
@@ -178,9 +172,37 @@ async def activate_trial(user_id: str, agent_name: str) -> None:
         await conn.close()
 
 
-async def tony_classify(message: str) -> dict:
+def detect_language(text: str, client_lang: str = None) -> str:
+    """Pré-détection de langue par mots-clés. client_lang = hint envoyé par le client WS."""
+    # Si le client envoie explicitement une langue, on la respecte
+    if client_lang in ("pt", "en", "fr"):
+        return client_lang
+    t = text.lower()
+    # Mots exclusivement portugais (pas "euros" qui est commun)
+    pt_keywords = {"escavadora","escavadoras","encontra","encontrar","procura","procurar",
+                   "máquina","maquina","abaixo","quero","olá","ola","obrigado","preço",
+                   "preco","pesquisar","comprar","vender","retro","giratória"}
+    # Mots exclusivement anglais
+    en_keywords = {"excavator","excavators","find","search","loader","crane","tractor",
+                   "buy","sell","equipment","under","hello","what","how","can you"}
+    pt_score = sum(1 for w in pt_keywords if w in t)
+    en_score = sum(1 for w in en_keywords if w in t)
+    if pt_score > 0:
+        return "pt"
+    if en_score > 0:
+        return "en"
+    return "fr"
+
+
+async def tony_classify(message: str, client_lang: str = None) -> dict:
     """Appelle Tony (gemma2:2b) pour classifier l'intention."""
-    prompt = f"{TONY_SYSTEM}\n\nMESSAGE UTILISATEUR: {message}\n\nJSON:"
+    forced_lang = detect_language(message, client_lang)
+    lang_hint = {
+        "pt": "LANGUAGE=Portuguese (PT-PT). All text fields must be in Portuguese.",
+        "en": "LANGUAGE=English. All text fields must be in English.",
+        "fr": "LANGUAGE=French. All text fields must be in French.",
+    }[forced_lang]
+    prompt = f"{TONY_SYSTEM}\n\n{lang_hint}\nForce lang=\"{forced_lang}\" in your JSON.\n\nMESSAGE: {message}\n\nJSON:"
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
             res = await client.post(
@@ -193,21 +215,44 @@ async def tony_classify(message: str) -> dict:
                 },
             )
             raw = res.json().get("message", {}).get("content", "")
-            # Extraire JSON de la réponse
             start = raw.find("{")
             end = raw.rfind("}") + 1
             if start >= 0 and end > start:
-                return json.loads(raw[start:end])
+                result = json.loads(raw[start:end])
+                # Toujours forcer la langue pré-détectée (Tony peut se tromper)
+                result["lang"] = forced_lang
+                # Forcer machine_search si mots-clés machines présents et Tony a raté
+                machine_kw = {"escavadora","pelleteuse","excavator","grue","crane",
+                              "tracteur","tractor","chargeuse","loader","pelle"}
+                if result.get("intent") == "general_chat" and any(w in message.lower() for w in machine_kw):
+                    ack_by_lang = {
+                        "pt": f"A pesquisar...", "en": "Searching...", "fr": "Je recherche..."
+                    }
+                    result["intent"] = "machine_search"
+                    result["agent"] = "max_search"
+                    result["ack_message"] = result.get("ack_message") or ack_by_lang[forced_lang]
+                    result["estimated_delay"] = "2-4 min"
+                    result["direct_response"] = None
+                return result
     except Exception as e:
         logger.warning(f"Tony classify error: {e}")
-    # Fallback: general_chat en français
+    # Fallback — vérifier si machine_search par mots-clés même sans JSON Tony
+    machine_kw = {"escavadora","pelleteuse","excavator","grue","crane",
+                  "tracteur","tractor","chargeuse","loader","pelle"}
+    if any(w in message.lower() for w in machine_kw):
+        ack_by_lang = {"pt": "A pesquisar...", "en": "Searching...", "fr": "Je recherche..."}
+        return {
+            "intent": "machine_search", "lang": forced_lang, "agent": "max_search",
+            "ack_message": ack_by_lang[forced_lang], "estimated_delay": "2-4 min",
+            "direct_response": None,
+        }
+    fallback_msg = {"pt": "Olá! Sou o Tony, assistente LEGA. Como posso ajudar?",
+                    "en": "Hi! I'm Tony, LEGA assistant. How can I help?",
+                    "fr": "Je suis Tony, votre assistant LEGA. Comment puis-je vous aider ?"}
     return {
-        "intent": "general_chat",
-        "lang": "fr",
-        "agent": None,
-        "ack_message": None,
-        "estimated_delay": None,
-        "direct_response": "Je suis Tony, votre assistant LEGA. Comment puis-je vous aider ?",
+        "intent": "general_chat", "lang": forced_lang, "agent": None,
+        "ack_message": None, "estimated_delay": None,
+        "direct_response": fallback_msg[forced_lang],
     }
 
 
@@ -476,7 +521,8 @@ async def websocket_endpoint(ws: WebSocket):
             logger.info(f"WS [{session_id[:8]}]: {user_msg[:80]}")
 
             # Tony classifie l'intention
-            classification = await tony_classify(user_msg)
+            client_lang = payload_raw.get("lang")
+            classification = await tony_classify(user_msg, client_lang)
             intent = classification.get("intent", "general_chat")
             lang = classification.get("lang", "fr")
             agent = classification.get("agent")
@@ -508,7 +554,7 @@ async def websocket_endpoint(ws: WebSocket):
                         await activate_trial(user_id, agent)
                         logger.info(f"Trial activé: user {user_id[:8]} → {agent}")
 
-                        # Message upsell / trial activé
+                        # Message upsell / trial activé — dans la langue détectée
                         if lang == "pt":
                             upsell = (
                                 f"🎯 O agente <b>{agent}</b> é premium.\n\n"
@@ -519,6 +565,17 @@ async def websocket_endpoint(ws: WebSocket):
                                 f"🔄 O seu trial anterior expirou.\n"
                                 f"✅ Novo trial de 24h ativado! A processar...\n\n"
                                 f"💡 Acesso permanente: <b>49€/mês</b>."
+                            )
+                        elif lang == "en":
+                            upsell = (
+                                f"🎯 The <b>{agent}</b> agent is premium.\n\n"
+                                f"✅ I've activated a <b>free 24h trial</b> for you!\n"
+                                f"Processing your request now...\n\n"
+                                f"💡 Full access: <b>€49/month</b>. Contact us."
+                            ) if not is_renewal else (
+                                f"🔄 Your previous trial has expired.\n"
+                                f"✅ New 24h trial activated! Processing...\n\n"
+                                f"💡 Full access: <b>€49/month</b>."
                             )
                         else:
                             upsell = (
