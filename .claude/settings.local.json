@@ -37,7 +37,8 @@
       "Bash(curl:*)",
       "Read(//root/**)",
       "Bash(ip addr *)",
-      "Bash(docker restart *)"
+      "Bash(docker restart *)",
+      "Bash(git commit *)"
     ]
   }
 }

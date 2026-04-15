@@ -358,9 +358,67 @@ Génère:
         return f"⚠️ Erreur Sam Comms: {str(e)[:100]}"
 
 
+async def run_standardiste(message: str, lang: str) -> str:
+    """Standardiste Multilingue: réception client, catalogue, transfert agents (gemma4:e2b)."""
+    lang_instr = {
+        "fr": "Français. Tu t'appelles Léa, tu es la standardiste de LEGA.",
+        "pt": "Português europeu (PT-PT). Chamas-te Léa, és a recepcionista da LEGA.",
+        "en": "English. Your name is Lea, you are LEGA's receptionist.",
+    }.get(lang, "Français.")
+
+    # Catalogue récent (5 produits publiés)
+    catalogue_context = ""
+    try:
+        conn = await db_connect()
+        rows = await conn.fetch(
+            "SELECT title, price, currency, category FROM products WHERE status='published' ORDER BY created_at DESC LIMIT 5"
+        )
+        await conn.close()
+        if rows:
+            items = [f"• {r['title']} — {r['price']}{r['currency']}" for r in rows]
+            catalogue_context = "\nCATALOGUE DISPONIBLE:\n" + "\n".join(items)
+    except Exception:
+        pass
+
+    prompt = f"""Tu es Léa, la standardiste multilingue de LEGA, négociant international en engins de travaux publics (pelleteuses, chargeuses, grues, bulldozers, tracteurs TP d'occasion). LEGA opère entre la France et le Portugal.
+Langue de réponse: {lang_instr}
+{catalogue_context}
+
+Règles:
+- Réponse professionnelle, chaleureuse, concise (2-4 phrases MAX)
+- Si question sur une machine spécifique → consulte catalogue ci-dessus, mentionne les machines disponibles
+- Si demande complexe (recherche marché, email, analyse photo) → dis que tu passes l'appel à Tony, le spécialiste
+- Ne jamais inventer de prix ou machines qui ne sont pas dans le catalogue
+
+DEMANDE: {message}
+RÉPONSE LÉA:"""
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+            res = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": AGENT_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {"temperature": 0.3, "num_predict": 300},
+                },
+            )
+            return res.json().get("message", {}).get("content", "").strip()
+    except Exception as e:
+        logger.error(f"Standardiste error: {e}")
+        fallback = {
+            "fr": "Je vous transfère à notre assistant Tony, qui pourra mieux vous aider.",
+            "pt": "Vou transferi-lo para o Tony, o nosso assistente especializado.",
+            "en": "I'll transfer you to Tony, our specialist assistant.",
+        }
+        return fallback.get(lang, fallback["fr"])
+
+
 AGENT_EXECUTORS = {
     "max_search": run_max_search,
     "sam_comms": run_sam_comms,
+    "standardiste": lambda payload, lang: run_standardiste(payload.get("message", ""), lang),
 }
 
 
@@ -527,8 +585,22 @@ async def websocket_endpoint(ws: WebSocket):
 
             logger.info(f"WS [{session_id[:8]}]: {user_msg[:80]}")
 
-            # Tony classifie l'intention
             client_lang = payload_raw.get("lang")
+            preferred_agent = payload_raw.get("preferred_agent")
+
+            # Routing direct Standardiste — bypass Tony classification
+            if preferred_agent == "standardiste":
+                lang = detect_language(user_msg, client_lang)
+                response = await run_standardiste(user_msg, lang)
+                await ws.send_json({
+                    "type": "agent_response",
+                    "payload": response,
+                    "metadata": {"agent": "standardiste", "lang": lang},
+                })
+                await asyncio.sleep(0.1)
+                continue
+
+            # Tony classifie l'intention
             classification = await tony_classify(user_msg, client_lang)
             intent = classification.get("intent", "general_chat")
             lang = classification.get("lang", "fr")

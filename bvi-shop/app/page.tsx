@@ -10,6 +10,13 @@ const API_BASE = API.replace("/api", "");
 type Msg = { role: "user" | "agent"; text: string; time?: string; uploading?: boolean };
 type Product = { id: number; title: string; price: number; currency: string; status: string; images?: any; category: string; description?: string };
 type Tab = "chat" | "catalogue" | "upload";
+type StdLang = "fr" | "pt" | "en";
+
+const STD_GREET: Record<StdLang, string> = {
+  fr: "Bonjour, LEGA — Léa à votre service. En quoi puis-je vous aider ?",
+  pt: "Bom dia, LEGA — Léa ao seu serviço. Em que posso ajudar?",
+  en: "Good day, LEGA — Lea speaking. How may I help you?",
+};
 
 const T: any = {
   fr: {
@@ -54,6 +61,15 @@ export default function ClientApp() {
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+
+  // Standardiste widget
+  const [stdOpen, setStdOpen] = useState(false);
+  const [stdLang, setStdLang] = useState<StdLang>("fr");
+  const [stdMsgs, setStdMsgs] = useState<Msg[]>([]);
+  const [stdInput, setStdInput] = useState("");
+  const [stdLoading, setStdLoading] = useState(false);
+  const stdEnd = useRef<HTMLDivElement>(null);
+
   const ws = useRef<WebSocket | null>(null);
   const reconnect = useRef(0);
   const messagesEnd = useRef<HTMLDivElement>(null);
@@ -64,6 +80,34 @@ export default function ClientApp() {
   useEffect(() => {
     setMsgs([{ role: "agent", text: T[lang].welcome, time: now() }]);
   }, [lang]);
+
+  // Standardiste — greeting on open / lang change
+  useEffect(() => {
+    if (stdOpen) {
+      setStdMsgs([{ role: "agent", text: STD_GREET[stdLang], time: now() }]);
+    }
+  }, [stdOpen, stdLang]);
+
+  // Standardiste — scroll to bottom
+  useEffect(() => {
+    stdEnd.current?.scrollIntoView({ behavior: "smooth" });
+  }, [stdMsgs]);
+
+  // Standardiste — send message via shared WS with preferred_agent
+  const stdSend = () => {
+    if (!stdInput.trim() || stdLoading) return;
+    const text = stdInput.trim();
+    setStdInput("");
+    setStdMsgs(p => [...p, { role: "user", text, time: now() }]);
+    setStdLoading(true);
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({ type: "user_message", payload: text, lang: stdLang, preferred_agent: "standardiste" }));
+    } else {
+      setStdMsgs(p => [...p, { role: "agent", text: stdLang === "fr" ? "⚠️ Reconnexion..." : stdLang === "pt" ? "⚠️ A reconectar..." : "⚠️ Reconnecting...", time: now() }]);
+      setStdLoading(false);
+      connectWS();
+    }
+  };
 
   // Scroll to bottom
   useEffect(() => {
@@ -80,7 +124,12 @@ export default function ClientApp() {
       try {
         const d = JSON.parse(e.data);
         if (d.type === "agent_response") {
-          setMsgs(p => [...p, { role: "agent", text: d.payload, time: now() }]);
+          if (d.metadata?.agent === "standardiste") {
+            setStdMsgs(p => [...p, { role: "agent", text: d.payload, time: now() }]);
+            setStdLoading(false);
+          } else {
+            setMsgs(p => [...p, { role: "agent", text: d.payload, time: now() }]);
+          }
         }
       } catch { }
     };
@@ -313,6 +362,96 @@ export default function ClientApp() {
           </div>
         )}
       </div>
+
+      {/* ── Standardiste floating widget ─────────────────────────────────── */}
+      {/* Floating button */}
+      {!stdOpen && (
+        <button onClick={() => setStdOpen(true)} style={{
+          position: "fixed", bottom: 80, right: 16, zIndex: 100,
+          width: 54, height: 54, borderRadius: "50%", border: "2px solid #334155",
+          background: "#0f172a", color: "#60a5fa", fontSize: 24, cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
+        }} title="Standardiste LEGA">
+          📞
+        </button>
+      )}
+
+      {/* Standardiste panel */}
+      {stdOpen && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 200,
+          background: "#0a1628", display: "flex", flexDirection: "column",
+        }}>
+          {/* Header */}
+          <div style={{ background: "#0f172a", borderBottom: "1px solid #1e293b", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>📞 Standardiste LEGA</div>
+              <div style={{ fontSize: 11, color: "#64748b" }}>
+                {stdLang === "fr" ? "Léa — Réception multilingue" : stdLang === "pt" ? "Léa — Receção multilingue" : "Lea — Multilingual reception"}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {(["fr", "pt", "en"] as StdLang[]).map(l => (
+                <button key={l} onClick={() => setStdLang(l)} style={{
+                  padding: "3px 8px", borderRadius: 5, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                  border: "1px solid #334155",
+                  background: stdLang === l ? "#3b82f6" : "#1e293b",
+                  color: stdLang === l ? "#fff" : "#94a3b8",
+                }}>{l.toUpperCase()}</button>
+              ))}
+              <button onClick={() => setStdOpen(false)} style={{
+                width: 30, height: 30, borderRadius: "50%", border: "1px solid #334155",
+                background: "#1e293b", color: "#94a3b8", cursor: "pointer", fontSize: 16,
+              }}>✕</button>
+            </div>
+          </div>
+
+          {/* Messages */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+            {stdMsgs.map((m, i) => (
+              <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: m.role === "user" ? "flex-end" : "flex-start" }}>
+                {m.role === "agent" && (
+                  <div style={{ fontSize: 11, color: "#475569", marginBottom: 3, paddingLeft: 4 }}>👩‍💼 Léa</div>
+                )}
+                <div style={{
+                  maxWidth: "85%", padding: "10px 14px",
+                  borderRadius: m.role === "user" ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+                  background: m.role === "user" ? "#2563eb" : "#1e293b",
+                  color: "#fff", fontSize: 14, lineHeight: 1.55, whiteSpace: "pre-wrap", wordBreak: "break-word",
+                }}>
+                  {m.text}
+                </div>
+                {m.time && <span style={{ fontSize: 10, color: "#475569", marginTop: 2, paddingInline: 4 }}>{m.time}</span>}
+              </div>
+            ))}
+            {stdLoading && (
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                <div style={{ padding: "10px 14px", background: "#1e293b", borderRadius: "14px 14px 14px 4px", color: "#64748b", fontSize: 14 }}>
+                  {stdLang === "fr" ? "Léa réfléchit..." : stdLang === "pt" ? "Léa a pensar..." : "Lea is thinking..."}
+                </div>
+              </div>
+            )}
+            <div ref={stdEnd} />
+          </div>
+
+          {/* Input */}
+          <div style={{ padding: "10px 12px", borderTop: "1px solid #1e293b", background: "#0f172a", display: "flex", gap: 8 }}>
+            <input
+              value={stdInput}
+              onChange={e => setStdInput(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && !e.shiftKey && stdSend()}
+              placeholder={stdLang === "fr" ? "Votre message à Léa..." : stdLang === "pt" ? "A sua mensagem para Léa..." : "Your message to Lea..."}
+              autoFocus
+              style={{ flex: 1, padding: "11px 14px", borderRadius: 24, border: "1px solid #334155", background: "#1e293b", color: "#f8fafc", fontSize: 15, outline: "none" }}
+            />
+            <button onClick={stdSend} disabled={!stdInput.trim() || stdLoading}
+              style={{ width: 46, height: 46, borderRadius: "50%", border: "none", background: "#3b82f6", color: "#fff", cursor: "pointer", fontSize: 20, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, opacity: stdInput.trim() && !stdLoading ? 1 : 0.4 }}>
+              ➤
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Bottom tab bar */}
       <div style={{ display: "flex", borderTop: "1px solid #1e293b", background: "#0a1628", flexShrink: 0 }}>
