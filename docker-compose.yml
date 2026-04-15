@@ -39,6 +39,12 @@ services:
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       SITE_MANAGEMENT_MODE: ${SITE_MANAGEMENT_MODE:-manual}
       AGENT_API_KEY: ${AGENT_API_KEY:-}
+      SEARXNG_URL: ${SEARXNG_URL:-http://bvi-searxng-1:8080}
+      TTS_ENABLED: ${TTS_ENABLED:-false}
+      AVATAR_ENABLED: ${AVATAR_ENABLED:-false}
+      AIIA_ENDPOINT: ${AIIA_ENDPOINT:-http://localhost:8003/tts}
+      BRIEF_HOUR: ${BRIEF_HOUR:-7}
+      BRIEF_MINUTE: ${BRIEF_MINUTE:-0}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

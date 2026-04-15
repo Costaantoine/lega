@@ -548,11 +548,171 @@ async def trial_expiry_cron():
             logger.error(f"Trial expiry cron error: {e}")
 
 
+# ── Brief matinal Agenda ─────────────────────────────────────────────────────
+
+async def build_morning_brief(lang: str = "fr", user_prefs: dict = None) -> str:
+    """Construit le contenu du brief matinal pour l'agent Agenda."""
+    prefs = user_prefs or {}
+    sections = []
+
+    # 1. Planning du jour (événements de aujourd'hui)
+    try:
+        conn = await db_connect()
+        today_events = await conn.fetch(
+            """SELECT title, start_time, location FROM events
+               WHERE start_time::date = CURRENT_DATE
+               ORDER BY start_time LIMIT 10"""
+        )
+        await conn.close()
+        if today_events:
+            lines = [f"  • {r['start_time'].strftime('%H:%M')} — {r['title']}" + (f" ({r['location']})" if r['location'] else "") for r in today_events]
+            header = {"fr": "📅 PLANNING DU JOUR", "pt": "📅 AGENDA DO DIA", "en": "📅 TODAY'S SCHEDULE"}[lang]
+            sections.append(header + "\n" + "\n".join(lines))
+        else:
+            header = {"fr": "📅 PLANNING DU JOUR", "pt": "📅 AGENDA DO DIA", "en": "📅 TODAY'S SCHEDULE"}[lang]
+            empty = {"fr": "  Aucun événement planifié", "pt": "  Sem eventos agendados", "en": "  No events scheduled"}[lang]
+            sections.append(header + "\n" + empty)
+    except Exception as e:
+        logger.warning(f"Brief events error: {e}")
+
+    # 2. Catalogue — produits récents
+    try:
+        conn = await db_connect()
+        recent_products = await conn.fetch(
+            "SELECT title, price, currency FROM products WHERE status='published' ORDER BY created_at DESC LIMIT 3"
+        )
+        await conn.close()
+        if recent_products:
+            lines = [f"  • {r['title']} — {r['price']}{r['currency']}" for r in recent_products]
+            header = {"fr": "🚜 MACHINES EN VENTE", "pt": "🚜 MÁQUINAS À VENDA", "en": "🚜 MACHINES FOR SALE"}[lang]
+            sections.append(header + "\n" + "\n".join(lines))
+    except Exception as e:
+        logger.warning(f"Brief products error: {e}")
+
+    # 3. Opportunités marché via SearXNG (si activé dans prefs)
+    if prefs.get("alertes_opportunites", True):
+        try:
+            queries = {
+                "fr": "pelleteuse occasion vente france portugal prix",
+                "pt": "escavadoras usadas venda portugal espanha preço",
+                "en": "used excavator for sale europe price",
+            }
+            results = await web_utils.search_web(queries.get(lang, queries["fr"]), max_results=3, lang=lang)
+            if results:
+                lines = [f"  • {r['title'][:80]}" for r in results[:3]]
+                header = {"fr": "📈 OPPORTUNITÉS MARCHÉ", "pt": "📈 OPORTUNIDADES DE MERCADO", "en": "📈 MARKET OPPORTUNITIES"}[lang]
+                sections.append(header + "\n" + "\n".join(lines))
+        except Exception as e:
+            logger.warning(f"Brief search error: {e}")
+
+    # 4. Tâches récentes (agents actifs hier)
+    try:
+        conn = await db_connect()
+        recent_tasks = await conn.fetch(
+            """SELECT agent_name, COUNT(*) as cnt FROM tasks
+               WHERE completed_at > NOW() - INTERVAL '24 hours' AND status='done'
+               GROUP BY agent_name ORDER BY cnt DESC LIMIT 3"""
+        )
+        await conn.close()
+        if recent_tasks:
+            lines = [f"  • {r['agent_name']} : {r['cnt']} tâche(s)" for r in recent_tasks]
+            header = {"fr": "⚡ ACTIVITÉ (24H)", "pt": "⚡ ATIVIDADE (24H)", "en": "⚡ ACTIVITY (24H)"}[lang]
+            sections.append(header + "\n" + "\n".join(lines))
+    except Exception as e:
+        logger.warning(f"Brief tasks error: {e}")
+
+    # Assemblage
+    date_str = datetime.now().strftime("%A %d %B %Y")
+    greet = {
+        "fr": f"🌅 <b>Brief Matinal LEGA</b> — {date_str}\n\n",
+        "pt": f"🌅 <b>Briefing Matinal LEGA</b> — {date_str}\n\n",
+        "en": f"🌅 <b>LEGA Morning Brief</b> — {date_str}\n\n",
+    }[lang]
+    footer = {
+        "fr": "\n\n💡 Répondez à ce message ou ouvrez le chat Tony pour agir.",
+        "pt": "\n\n💡 Responda a esta mensagem ou abra o chat Tony para agir.",
+        "en": "\n\n💡 Reply to this message or open the Tony chat to take action.",
+    }[lang]
+
+    return greet + "\n\n".join(sections) + footer
+
+
+async def send_morning_brief():
+    """Envoie le brief matinal à tous les utilisateurs avec brief_enabled=true."""
+    logger.info("Morning brief: building...")
+    try:
+        conn = await db_connect()
+        users = await conn.fetch(
+            """SELECT id, preferred_language, preferences, telegram_chat_id
+               FROM users
+               WHERE (preferences->>'brief_enabled')::boolean IS NOT FALSE"""
+        )
+        await conn.close()
+
+        sent = 0
+        already_sent: set = set()  # éviter doublons si plusieurs users partagent le même chat_id
+        for user in users:
+            lang = user["preferred_language"] or "fr"
+            raw_prefs = user["preferences"]
+            if isinstance(raw_prefs, str):
+                try:
+                    raw_prefs = json.loads(raw_prefs)
+                except Exception:
+                    raw_prefs = {}
+            prefs = raw_prefs or {}
+            chat_id = user["telegram_chat_id"] or TELEGRAM_CHAT_ID  # fallback admin
+            if not chat_id or chat_id in already_sent:
+                continue
+            already_sent.add(chat_id)
+            brief_text = await build_morning_brief(lang=lang, user_prefs=prefs)
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    await client.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                        json={"chat_id": chat_id, "text": brief_text, "parse_mode": "HTML"},
+                    )
+                sent += 1
+            except Exception as e:
+                logger.warning(f"Brief Telegram send error (user {str(user['id'])[:8]}): {e}")
+
+        logger.info(f"Morning brief sent to {sent} user(s)")
+    except Exception as e:
+        logger.error(f"Morning brief error: {e}")
+
+
+async def morning_brief_cron():
+    """Cron : envoie le brief matinal tous les jours à l'heure configurée (défaut 07:00)."""
+    logger.info("Morning brief cron started")
+    brief_hour = int(os.getenv("BRIEF_HOUR", "7"))
+    brief_minute = int(os.getenv("BRIEF_MINUTE", "0"))
+    while True:
+        now_dt = datetime.now()
+        # Calculer les secondes jusqu'au prochain déclenchement
+        next_run = now_dt.replace(hour=brief_hour, minute=brief_minute, second=0, microsecond=0)
+        if next_run <= now_dt:
+            from datetime import timedelta
+            next_run = next_run + timedelta(days=1)
+        wait_secs = (next_run - now_dt).total_seconds()
+        logger.info(f"Morning brief cron: prochain envoi dans {int(wait_secs//3600)}h{int((wait_secs%3600)//60)}m")
+        await asyncio.sleep(wait_secs)
+        await send_morning_brief()
+
+
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(task_worker())
     asyncio.create_task(trial_expiry_cron())
-    logger.info("LEGA API v1.0 started — Tony + Worker + Trial cron online")
+    asyncio.create_task(morning_brief_cron())
+    logger.info("LEGA API v1.0 started — Tony + Worker + Trial cron + Morning brief online")
+
+
+# ── Endpoint déclencher brief manuellement ───────────────────────────────────
+
+@app.post("/api/agenda/brief-now")
+async def trigger_brief_now(lang: str = "fr"):
+    """Déclenche le brief matinal immédiatement (test / usage admin)."""
+    asyncio.create_task(send_morning_brief())
+    return {"status": "ok", "message": f"Brief matinal déclenché (lang={lang})"}
 
 
 # ── WebSocket ────────────────────────────────────────────────────────────────
