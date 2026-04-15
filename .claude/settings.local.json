@@ -38,7 +38,9 @@
       "Read(//root/**)",
       "Bash(ip addr *)",
       "Bash(docker restart *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(docker rm *)",
+      "Bash(zip -r lega-test-archive-2026-04-15.zip lega-test/ -x \"lega-test/node_modules/*\")"
     ]
   }
 }

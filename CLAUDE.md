@@ -152,11 +152,21 @@ docker network connect bvi_bvi-net bvi-api-1
 - docs/ : README + pelleteuse.md + guide_transport.md (base initiale)
 - Volume ./docs:/app/docs:ro dans compose
 
-## 🔲 Prochaines étapes (Session 3)
+### ✅ Nettoyage VPS (fin session 2)
+- Container `lega-test-bvi-db-1` arrêté et supprimé
+- `/opt/lega-test/` supprimé (ancienne démo TOPengin, obsolète)
+- `/root/newappai-hello-test/` supprimé (projet vide)
 
-- [ ] **Sam Comms SMTP** : mot de passe Gmail à demander à Antoine → intégration aiosmtplib
-- [ ] **Authentification JWT dashboard** : ADMIN_USER/PASS + middleware FastAPI + page login Next.js
-- [ ] **Tony routing documentation** : détecter intent "fiche technique / prix / transport" → agent documentation
-- [ ] **Enrichir docs/** : ajouter fiches constructeurs (CAT, Volvo, Komatsu), prix marché 2026
-- [ ] **Traefik** : désactiver traefik-c9es via Coolify UI (conflit port 80)
-- [ ] **Second VPS** : confirmer avec Antoine si existant et IP
+## 🔲 Prochaines étapes (Session 3) — par priorité
+
+### P1 — Nécessite action Antoine
+- [ ] **Sam Comms SMTP** : demander mot de passe app Gmail `escritorio.ai.lega@gmail.com` → intégration aiosmtplib dans web_utils.py
+- [ ] **Second VPS** : confirmer existence et IP avec Antoine
+
+### P2 — Développement immédiat
+- [ ] **JWT dashboard admin** : `POST /api/auth/login`, middleware FastAPI, page `/login` Next.js, ADMIN_USER/PASS dans .env
+- [ ] **Tony routing documentation** : ajouter intent `documentation_search` dans TONY_SYSTEM (déclencheurs : fiche technique, prix, transport, douane, CE)
+- [ ] **Enrichir docs/** : fiches constructeurs (CAT, Volvo, Komatsu), prix marché 2026, réglementation Portugal
+
+### P3 — Infra
+- [ ] **Traefik** : désactiver `traefik-c9es-traefik-1` via Coolify UI (conflit port 80 avec coolify-proxy)
