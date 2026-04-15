@@ -18,8 +18,9 @@ export default function MonitoringPage() {
   const [lastUpdate, setLastUpdate] = useState('');
 
   const fetchMonitoring = async () => {
+    const tok = localStorage.getItem('bvi_token') || '';
     try {
-      const res = await fetch(`${API}/monitoring`);
+      const res = await fetch(`${API}/monitoring`, { headers: { Authorization: `Bearer ${tok}` } });
       const d = await res.json();
       setData(d);
       setLastUpdate(new Date().toLocaleTimeString('fr-FR'));

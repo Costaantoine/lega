@@ -5,14 +5,16 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiofiles
 import httpx
+import jwt
 import web_utils
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -36,6 +38,34 @@ PREMIUM_AGENTS = {"max_search", "lea_extract", "visa_vision"}
 # Mode gestion site : "agent" (automatique) ou "manual" (dashboard)
 SITE_MANAGEMENT_MODE = os.getenv("SITE_MANAGEMENT_MODE", "manual")
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
+
+# JWT Auth dashboard
+JWT_SECRET = os.getenv("JWT_SECRET", "changeme-secret-key")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = 24
+ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASS = os.getenv("ADMIN_PASS", "admin")
+
+security_bearer = HTTPBearer(auto_error=False)
+
+def create_jwt_token(username: str) -> str:
+    payload = {
+        "sub": username,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS),
+        "iat": datetime.now(timezone.utc),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def verify_jwt_token(credentials: HTTPAuthorizationCredentials = Security(security_bearer)) -> str:
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Token manquant")
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload["sub"]
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expiré")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token invalide")
 
 # TTS / Avatar — hooks pour évolution future (Edge-TTS + Rhubarb lip-sync)
 # TTS_ENABLED=true  → text_to_speech(text, lang) active, audio base64 envoyé via WS
@@ -98,12 +128,13 @@ Detect language from these signals:
 - French words (pelleteuse, trouve, cherche, bonjour, devis) → lang=fr
 
 JSON format:
-{"intent":"machine_search|email_followup|image_analysis|watch_request|general_chat","lang":"fr|pt|en","agent":"max_search|sam_comms|visa_vision|null","ack_message":"short ack IN DETECTED LANGUAGE or null","estimated_delay":"string or null","direct_response":"full reply IN DETECTED LANGUAGE if general_chat, else null"}
+{"intent":"machine_search|email_followup|image_analysis|documentation_search|watch_request|general_chat","lang":"fr|pt|en","agent":"max_search|sam_comms|visa_vision|documentation|null","ack_message":"short ack IN DETECTED LANGUAGE or null","estimated_delay":"string or null","direct_response":"full reply IN DETECTED LANGUAGE if general_chat, else null"}
 
 Rules:
 - machine_search (pelleteuse/escavadora/excavator/grue/tracteur) → agent=max_search
 - email_followup (email/devis/relancer/contactar) → agent=sam_comms
 - image_analysis (photo/image/analyser) → agent=visa_vision
+- documentation_search (fiche technique/ficha técnica/technical spec/certificat CE/douane/customs/transport/poids/dimensions/prix marché/documentation) → agent=documentation
 - general_chat → agent=null, direct_response in detected language
 - ack_message and direct_response MUST be written in the detected language
 
@@ -112,7 +143,9 @@ Examples:
 "Encontra-me uma escavadora 10T abaixo de 10000 euros" → {"intent":"machine_search","lang":"pt","agent":"max_search","ack_message":"A pesquisar escavadora 10T abaixo de 10 000€...","estimated_delay":"2-4 minutos","direct_response":null}
 "Find me a 10T excavator under 10000 euros" → {"intent":"machine_search","lang":"en","agent":"max_search","ack_message":"Searching for a 10T excavator under €10,000...","estimated_delay":"2-4 minutes","direct_response":null}
 "Bonjour que peux-tu faire" → {"intent":"general_chat","lang":"fr","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Je suis Tony, assistant LEGA. Je trouve des machines TP, rédige des emails et surveille le marché."}
-"Olá o que fazes?" → {"intent":"general_chat","lang":"pt","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Olá! Sou o Tony, assistente LEGA. Encontro máquinas TP, redijo e-mails e monitorizo o mercado."}"""
+"Olá o que fazes?" → {"intent":"general_chat","lang":"pt","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Olá! Sou o Tony, assistente LEGA. Encontro máquinas TP, redijo e-mails e monitorizo o mercado."}
+"Quelle est la fiche technique de la pelleteuse CAT 320?" → {"intent":"documentation_search","lang":"fr","agent":"documentation","ack_message":"Je consulte la documentation technique...","estimated_delay":"30 secondes","direct_response":null}
+"What is the transport weight of a Volvo EC220?" → {"intent":"documentation_search","lang":"en","agent":"documentation","ack_message":"Checking technical documentation...","estimated_delay":"30 seconds","direct_response":null}"""
 
 
 async def notify_telegram(text: str) -> None:
@@ -239,6 +272,22 @@ async def tony_classify(message: str, client_lang: str = None) -> dict:
                     result["agent"] = "max_search"
                     result["ack_message"] = result.get("ack_message") or ack_by_lang[forced_lang]
                     result["estimated_delay"] = "2-4 min"
+                    result["direct_response"] = None
+                # Override documentation_search si mots-clés doc présents
+                doc_kw = {"fiche technique", "ficha técnica", "technical spec", "datasheet",
+                          "certificat ce", "certificação", "ce marking", "douane", "alfândega",
+                          "customs", "convoi exceptionnel", "transport routier", "poids total",
+                          "dimensions machine", "documentation", "guide technique"}
+                if result.get("intent") in ("general_chat",) and any(w in message.lower() for w in doc_kw):
+                    ack_by_lang = {
+                        "pt": "A consultar a documentação técnica...",
+                        "en": "Checking technical documentation...",
+                        "fr": "Je consulte la documentation technique..."
+                    }
+                    result["intent"] = "documentation_search"
+                    result["agent"] = "documentation"
+                    result["ack_message"] = result.get("ack_message") or ack_by_lang[forced_lang]
+                    result["estimated_delay"] = "30s"
                     result["direct_response"] = None
                 return result
     except Exception as e:
@@ -874,7 +923,7 @@ async def websocket_endpoint(ws: WebSocket):
 
             else:
                 # Agent requis → vérifier abonnement si premium
-                latency_map = {"max_search": 180, "sam_comms": 90, "visa_vision": 10}
+                latency_map = {"max_search": 180, "sam_comms": 90, "visa_vision": 10, "documentation": 30}
                 estimated = latency_map.get(agent, 120)
 
                 if agent in PREMIUM_AGENTS:
@@ -1002,6 +1051,24 @@ async def chat_rest(message: dict):
         return {"content": f"Erreur: {str(e)[:100]}", "model": TONY_MODEL}
 
 
+# ── Auth ─────────────────────────────────────────────────────────────────────
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+@app.post("/api/auth/login")
+async def auth_login(req: LoginRequest):
+    if req.username != ADMIN_USER or req.password != ADMIN_PASS:
+        raise HTTPException(status_code=401, detail="Identifiants incorrects")
+    token = create_jwt_token(req.username)
+    return {"access_token": token, "token_type": "bearer", "expires_in": JWT_EXPIRE_HOURS * 3600}
+
+@app.get("/api/auth/me")
+async def auth_me(username: str = Depends(verify_jwt_token)):
+    return {"username": username, "role": "admin"}
+
+
 # ── Health ────────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
@@ -1017,7 +1084,7 @@ async def health():
 # ── Registry endpoints ────────────────────────────────────────────────────────
 
 @app.get("/api/agents/registry")
-async def get_registry():
+async def get_registry(_: str = Depends(verify_jwt_token)):
     try:
         conn = await db_connect()
         rows = await conn.fetch(
@@ -1047,7 +1114,7 @@ async def get_agent_status(name: str):
 # ── Tasks endpoints ───────────────────────────────────────────────────────────
 
 @app.get("/api/tasks/{task_id}")
-async def get_task(task_id: str):
+async def get_task(task_id: str, _: str = Depends(verify_jwt_token)):
     try:
         conn = await db_connect()
         row = await conn.fetchrow("SELECT * FROM tasks WHERE task_id=$1", task_id)
@@ -1062,7 +1129,7 @@ async def get_task(task_id: str):
 
 
 @app.get("/api/tasks")
-async def list_tasks(session_id: str = None, status: str = None, limit: int = 20):
+async def list_tasks(session_id: str = None, status: str = None, limit: int = 20, _: str = Depends(verify_jwt_token)):
     try:
         conn = await db_connect()
         query = "SELECT task_id, session_id, agent_name, status, language, created_at, completed_at, estimated_latency_sec, actual_latency_sec FROM tasks WHERE 1=1"
@@ -1174,7 +1241,7 @@ Génère: 1) 3 alertes basées sur ces annonces, 2) Conseils prix, 3) Message cl
 # ── Sources CRUD ──────────────────────────────────────────────────────────────
 
 @app.get("/api/sources")
-async def api_get_sources():
+async def api_get_sources(_: str = Depends(verify_jwt_token)):
     try:
         conn = await db_connect()
         rows = await conn.fetch("SELECT id, url, category, region, added_by, created_at FROM sources ORDER BY created_at DESC")
@@ -1185,7 +1252,7 @@ async def api_get_sources():
 
 
 @app.post("/api/sources/add")
-async def add_source(request: dict):
+async def add_source(request: dict, _: str = Depends(verify_jwt_token)):
     url = request.get("url", "").strip()
     if not url or not url.startswith("http"):
         return {"error": "URL valide requise"}
@@ -1200,7 +1267,7 @@ async def add_source(request: dict):
 
 
 @app.delete("/api/sources/{source_id}")
-async def api_delete_source(source_id: int):
+async def api_delete_source(source_id: int, _: str = Depends(verify_jwt_token)):
     try:
         conn = await db_connect()
         await conn.execute("DELETE FROM sources WHERE id=$1", source_id)
@@ -1249,7 +1316,7 @@ async def get_product(product_id: int):
 
 
 @app.post("/api/products")
-async def create_product(product: ProductCreate):
+async def create_product(product: ProductCreate, _: str = Depends(verify_jwt_token)):
     try:
         conn = await db_connect()
         row = await conn.fetchrow(
@@ -1264,7 +1331,7 @@ async def create_product(product: ProductCreate):
 
 
 @app.put("/api/products/{product_id}")
-async def update_product(product_id: int, product: ProductUpdate):
+async def update_product(product_id: int, product: ProductUpdate, _: str = Depends(verify_jwt_token)):
     try:
         conn = await db_connect()
         updates, params = [], [product_id]
@@ -1294,7 +1361,7 @@ async def update_product(product_id: int, product: ProductUpdate):
 
 
 @app.delete("/api/products/{product_id}")
-async def delete_product(product_id: int):
+async def delete_product(product_id: int, _: str = Depends(verify_jwt_token)):
     try:
         conn = await db_connect()
         await conn.execute("UPDATE products SET status='archived', updated_at=NOW() WHERE id=$1", product_id)
@@ -1305,7 +1372,7 @@ async def delete_product(product_id: int):
 
 
 @app.post("/api/products/{product_id}/upload")
-async def upload_product_image(product_id: int, file: UploadFile = File(...)):
+async def upload_product_image(product_id: int, file: UploadFile = File(...), _: str = Depends(verify_jwt_token)):
     """Upload image for a product, save to /app/uploads/, update images array in DB."""
     allowed = {"image/jpeg", "image/png", "image/webp", "image/gif"}
     if file.content_type not in allowed:
@@ -1332,7 +1399,7 @@ async def upload_product_image(product_id: int, file: UploadFile = File(...)):
 
 
 @app.patch("/api/products/{product_id}/status")
-async def patch_product_status(product_id: int, request: dict):
+async def patch_product_status(product_id: int, request: dict, _: str = Depends(verify_jwt_token)):
     """Update product status: draft→pending→published or →archived."""
     new_status = request.get("status")
     if new_status not in ("draft", "pending", "published", "archived"):
@@ -1356,7 +1423,7 @@ async def patch_product_status(product_id: int, request: dict):
 # ── Agent status update ────────────────────────────────────────────────────────
 
 @app.put("/api/agents/{name}/status")
-async def update_agent_status(name: str, request: dict):
+async def update_agent_status(name: str, request: dict, _: str = Depends(verify_jwt_token)):
     new_status = request.get("status")
     if new_status not in ("active", "maintenance", "overloaded"):
         raise HTTPException(400, "Statut invalide")
@@ -1379,7 +1446,7 @@ async def update_agent_status(name: str, request: dict):
 # ── Monitoring ────────────────────────────────────────────────────────────────
 
 @app.get("/api/monitoring")
-async def get_monitoring():
+async def get_monitoring(_: str = Depends(verify_jwt_token)):
     result: dict = {"timestamp": int(time.time()), "ollama": {}, "tasks": {}, "db": "ok", "ram": {}}
 
     # RAM (host via /proc/meminfo)
@@ -1434,7 +1501,7 @@ async def get_monitoring():
 # ── Activations ───────────────────────────────────────────────────────────────
 
 @app.get("/api/activations")
-async def get_activations(status: str = None):
+async def get_activations(status: str = None, _: str = Depends(verify_jwt_token)):
     try:
         conn = await db_connect()
         query = "SELECT id, session_id, user_email, agent_name, user_message, status, admin_notes, created_at, reviewed_at FROM activation_requests"
@@ -1466,7 +1533,7 @@ async def create_activation(request: dict):
 
 
 @app.put("/api/activations/{activation_id}")
-async def review_activation(activation_id: int, request: dict):
+async def review_activation(activation_id: int, request: dict, _: str = Depends(verify_jwt_token)):
     new_status = request.get("status")
     if new_status not in ("approved", "rejected"):
         raise HTTPException(400, "Status must be approved or rejected")

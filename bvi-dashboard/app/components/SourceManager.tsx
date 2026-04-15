@@ -11,9 +11,10 @@ export default function SourceManager() {
   const [loadingList, setLoadingList] = useState(true);
 
   const fetchSources = async () => {
+    const tok = localStorage.getItem('bvi_token') || '';
     setLoadingList(true);
     try {
-      const res = await fetch('http://76.13.141.221:8002/api/sources');
+      const res = await fetch('http://76.13.141.221:8002/api/sources', { headers: { Authorization: `Bearer ${tok}` } });
       const data = await res.json();
       if (Array.isArray(data)) setSources(data);
     } catch (e) { console.error('Fetch sources failed:', e); }
@@ -26,9 +27,10 @@ export default function SourceManager() {
     e.preventDefault();
     setStatus('loading');
     try {
+      const tok = localStorage.getItem('bvi_token') || '';
       const res = await fetch('http://76.13.141.221:8002/api/sources/add', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
         body: JSON.stringify({ ...form, added_by: 'dashboard' })
       });
       const data = await res.json();
@@ -50,7 +52,8 @@ export default function SourceManager() {
   const handleDelete = async (id: number, url: string) => {
     if (!confirm(`Supprimer cette source ?\n${url}`)) return;
     try {
-      const res = await fetch(`http://76.13.141.221:8002/api/sources/${id}`, { method: 'DELETE' });
+      const tok = localStorage.getItem('bvi_token') || '';
+      const res = await fetch(`http://76.13.141.221:8002/api/sources/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${tok}` } });
       const data = await res.json();
       if (data.status === 'ok') {
         setMessage('🗑️ Source supprimée');

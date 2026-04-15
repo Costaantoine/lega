@@ -28,9 +28,10 @@ export default function ProductsPage() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const fetchProducts = async () => {
+    const tok = localStorage.getItem('bvi_token') || '';
     try {
       const url = filterStatus === 'all' ? `${API}/products?limit=100` : `${API}/products?status=${filterStatus}&limit=100`;
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${tok}` } });
       const data = await res.json();
       if (Array.isArray(data)) setProducts(data);
     } catch { }
@@ -39,10 +40,11 @@ export default function ProductsPage() {
   useEffect(() => { fetchProducts(); }, [filterStatus]);
 
   const setStatus = async (id: number, status: string) => {
+    const tok = localStorage.getItem('bvi_token') || '';
     try {
       await fetch(`${API}/products/${id}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
         body: JSON.stringify({ status }),
       });
       setMsg(`✅ Statut mis à jour → ${STATUS_LABELS[status]}`);
@@ -53,10 +55,11 @@ export default function ProductsPage() {
   };
 
   const createProduct = async () => {
+    const tok = localStorage.getItem('bvi_token') || '';
     try {
       const res = await fetch(`${API}/products`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
         body: JSON.stringify({ ...newForm, price: parseFloat(newForm.price) || 0, attributes: {}, images: [] }),
       });
       const d = await res.json();
@@ -77,7 +80,8 @@ export default function ProductsPage() {
     const fd = new FormData();
     fd.append('file', file);
     try {
-      const res = await fetch(`${API}/products/${productId}/upload`, { method: 'POST', body: fd });
+      const tok = localStorage.getItem('bvi_token') || '';
+      const res = await fetch(`${API}/products/${productId}/upload`, { method: 'POST', body: fd, headers: { Authorization: `Bearer ${tok}` } });
       const d = await res.json();
       if (d.status === 'ok') {
         setMsg('📷 Image uploadée');
@@ -90,7 +94,8 @@ export default function ProductsPage() {
 
   const archiveProduct = async (id: number) => {
     if (!confirm('Archiver ce produit ?')) return;
-    await fetch(`${API}/products/${id}`, { method: 'DELETE' });
+    const tok = localStorage.getItem('bvi_token') || '';
+    await fetch(`${API}/products/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${tok}` } });
     fetchProducts();
     if (selected?.id === id) setSelected(null);
   };

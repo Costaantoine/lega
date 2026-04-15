@@ -17,9 +17,10 @@ export default function TasksPage() {
   const [loading, setLoading] = useState(true);
 
   const fetchTasks = async () => {
+    const tok = localStorage.getItem('bvi_token') || '';
     try {
       const url = filter === 'all' ? `${API}/tasks?limit=50` : `${API}/tasks?status=${filter}&limit=50`;
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${tok}` } });
       const data = await res.json();
       if (Array.isArray(data)) setTasks(data);
     } catch { }
@@ -27,8 +28,9 @@ export default function TasksPage() {
   };
 
   const fetchTaskDetail = async (task_id: string) => {
+    const tok = localStorage.getItem('bvi_token') || '';
     try {
-      const res = await fetch(`${API}/tasks/${task_id}`);
+      const res = await fetch(`${API}/tasks/${task_id}`, { headers: { Authorization: `Bearer ${tok}` } });
       const data = await res.json();
       setSelected(data);
     } catch { }

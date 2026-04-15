@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import MonitoringPage from "./components/MonitoringPage";
 import AgentsPage from "./components/AgentsPage";
 import TasksPage from "./components/TasksPage";
@@ -19,10 +20,28 @@ const NAV = [
 ];
 
 export default function AdminDashboard() {
+  const router = useRouter();
   const [page, setPage] = useState("monitoring");
   const [health, setHealth] = useState<any>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [pendingCount, setPendingCount] = useState(0);
+  const [authReady, setAuthReady] = useState(false);
+  const [adminUser, setAdminUser] = useState("admin");
+
+  // Vérification token au montage
+  useEffect(() => {
+    const token = localStorage.getItem("bvi_token");
+    if (!token) { router.replace("/login"); return; }
+    fetch(`${API}/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => { if (!r.ok) throw new Error(); return r.json(); })
+      .then(d => { setAdminUser(d.username); setAuthReady(true); })
+      .catch(() => { localStorage.removeItem("bvi_token"); router.replace("/login"); });
+  }, [router]);
+
+  const handleLogout = () => {
+    localStorage.removeItem("bvi_token");
+    router.push("/login");
+  };
 
   useEffect(() => {
     const fetchHealth = async () => {
@@ -38,8 +57,9 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     const fetchPending = async () => {
+      const tok = localStorage.getItem('bvi_token') || '';
       try {
-        const res = await fetch(`${API}/activations?status=pending`);
+        const res = await fetch(`${API}/activations?status=pending`, { headers: { Authorization: `Bearer ${tok}` } });
         const data = await res.json();
         if (Array.isArray(data)) setPendingCount(data.length);
       } catch { }
@@ -67,6 +87,14 @@ export default function AdminDashboard() {
     transition: "background 0.15s",
     borderLeft: page === id ? "3px solid #3b82f6" : "3px solid transparent",
   });
+
+  if (!authReady) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "#0f172a", color: "#64748b", fontSize: 14 }}>
+        Vérification session...
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
@@ -127,7 +155,10 @@ export default function AdminDashboard() {
                 🎁 {pendingCount} trial{pendingCount > 1 ? "s" : ""} en attente
               </button>
             )}
-            <span style={{ color: "#475569" }}>Antoine</span>
+            <span style={{ color: "#475569" }}>{adminUser}</span>
+            <button onClick={handleLogout} style={{ padding: "4px 12px", borderRadius: 6, border: "1px solid #334155", background: "transparent", color: "#64748b", cursor: "pointer", fontSize: 12 }}>
+              Déconnexion
+            </button>
           </div>
         </div>
 

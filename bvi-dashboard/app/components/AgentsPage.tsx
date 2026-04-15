@@ -18,8 +18,9 @@ export default function AgentsPage() {
   const [msg, setMsg] = useState('');
 
   const fetchAgents = async () => {
+    const tok = localStorage.getItem('bvi_token') || '';
     try {
-      const res = await fetch(`${API}/agents/registry`);
+      const res = await fetch(`${API}/agents/registry`, { headers: { Authorization: `Bearer ${tok}` } });
       const data = await res.json();
       if (Array.isArray(data)) setAgents(data);
     } catch { }
@@ -30,11 +31,12 @@ export default function AgentsPage() {
 
   const toggleStatus = async (name: string, current: string) => {
     const next = current === 'active' ? 'maintenance' : 'active';
+    const tok = localStorage.getItem('bvi_token') || '';
     setUpdating(name);
     try {
       const res = await fetch(`${API}/agents/${name}/status`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
         body: JSON.stringify({ status: next }),
       });
       const d = await res.json();

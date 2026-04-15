@@ -24,10 +24,11 @@ export default function ActivationsPage() {
   const [msg, setMsg] = useState('');
 
   const fetchRequests = async () => {
+    const tok = localStorage.getItem('bvi_token') || '';
     setLoading(true);
     try {
       const url = filter === 'all' ? `${API}/activations` : `${API}/activations?status=${filter}`;
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${tok}` } });
       const data = await res.json();
       if (Array.isArray(data)) setRequests(data);
     } catch { }
@@ -37,10 +38,11 @@ export default function ActivationsPage() {
   useEffect(() => { fetchRequests(); }, [filter]);
 
   const review = async (id: number, status: 'approved' | 'rejected') => {
+    const tok = localStorage.getItem('bvi_token') || '';
     try {
       const res = await fetch(`${API}/activations/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
         body: JSON.stringify({ status, admin_notes: notes[id] || '' }),
       });
       const d = await res.json();
