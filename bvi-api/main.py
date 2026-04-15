@@ -358,6 +358,97 @@ Génère:
         return f"⚠️ Erreur Sam Comms: {str(e)[:100]}"
 
 
+# ── RAG — indexation docs ────────────────────────────────────────────────────
+
+DOCS_DIR = Path("/app/docs")
+_rag_index: list[dict] = []   # [{filename, content, chunk}]
+
+def build_rag_index() -> int:
+    """Indexe tous les fichiers .md et .txt du dossier /app/docs (récursif)."""
+    global _rag_index
+    _rag_index = []
+    if not DOCS_DIR.exists():
+        return 0
+    for f in DOCS_DIR.rglob("*"):
+        if f.suffix in (".md", ".txt") and f.is_file():
+            try:
+                content = f.read_text(encoding="utf-8")
+                # Découper en chunks de ~800 caractères avec chevauchement 200
+                chunk_size, overlap = 800, 200
+                for i in range(0, len(content), chunk_size - overlap):
+                    chunk = content[i:i + chunk_size]
+                    if len(chunk) > 50:
+                        _rag_index.append({
+                            "filename": str(f.relative_to(DOCS_DIR)),
+                            "chunk": chunk,
+                        })
+            except Exception as e:
+                logger.warning(f"RAG index error {f}: {e}")
+    logger.info(f"RAG index: {len(_rag_index)} chunks depuis {DOCS_DIR}")
+    return len(_rag_index)
+
+
+def rag_search(query: str, top_k: int = 4) -> str:
+    """Recherche simple par mots-clés dans l'index RAG. Retourne le contexte pertinent."""
+    if not _rag_index:
+        return ""
+    q_words = set(query.lower().split())
+    scored = []
+    for doc in _rag_index:
+        text_lower = doc["chunk"].lower()
+        score = sum(1 for w in q_words if w in text_lower)
+        if score > 0:
+            scored.append((score, doc))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    if not scored:
+        return ""
+    top = scored[:top_k]
+    parts = [f"[{d['filename']}]\n{d['chunk']}" for _, d in top]
+    return "\n\n---\n\n".join(parts)
+
+
+async def run_documentation(payload: dict, lang: str) -> str:
+    """Agent Documentation: recherche dans la base RAG /docs/ (gemma4:e2b)."""
+    query = payload.get("message", "")
+    lang_instr = {"fr": "Français.", "pt": "Português europeu (PT-PT).", "en": "English."}.get(lang, "Français.")
+    rag_context = rag_search(query, top_k=4)
+
+    if not rag_context:
+        no_doc = {
+            "fr": f"Je n'ai pas trouvé de documentation sur '{query}'. Ajoutez des fichiers .md dans /docs/ pour enrichir la base.",
+            "pt": f"Não encontrei documentação sobre '{query}'. Adicione ficheiros .md em /docs/ para enriquecer a base.",
+            "en": f"No documentation found for '{query}'. Add .md files in /docs/ to enrich the knowledge base.",
+        }
+        return no_doc[lang]
+
+    prompt = f"""Tu es l'Agent Documentation de LEGA, expert en machines TP et négoce France-Portugal.
+Langue de réponse: {lang_instr}
+
+📚 DOCUMENTATION DISPONIBLE:
+{rag_context}
+
+🎯 QUESTION: {query}
+
+Réponds de manière précise et structurée en te basant UNIQUEMENT sur la documentation fournie.
+Si l'information n'est pas dans la documentation, dis-le clairement."""
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+            res = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": AGENT_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {"temperature": 0.2, "num_predict": 600},
+                },
+            )
+            return res.json().get("message", {}).get("content", "Résultat indisponible.").strip()
+    except Exception as e:
+        logger.error(f"Documentation agent error: {e}")
+        return f"⚠️ Erreur agent Documentation: {str(e)[:100]}"
+
+
 async def run_standardiste(message: str, lang: str) -> str:
     """Standardiste Multilingue: réception client, catalogue, transfert agents (gemma4:e2b)."""
     lang_instr = {
@@ -418,6 +509,7 @@ RÉPONSE LÉA:"""
 AGENT_EXECUTORS = {
     "max_search": run_max_search,
     "sam_comms": run_sam_comms,
+    "documentation": run_documentation,
     "standardiste": lambda payload, lang: run_standardiste(payload.get("message", ""), lang),
 }
 
@@ -700,10 +792,11 @@ async def morning_brief_cron():
 
 @app.on_event("startup")
 async def startup():
+    build_rag_index()
     asyncio.create_task(task_worker())
     asyncio.create_task(trial_expiry_cron())
     asyncio.create_task(morning_brief_cron())
-    logger.info("LEGA API v1.0 started — Tony + Worker + Trial cron + Morning brief online")
+    logger.info("LEGA API v1.0 started — Tony + Worker + Trial cron + Morning brief + RAG online")
 
 
 # ── Endpoint déclencher brief manuellement ───────────────────────────────────

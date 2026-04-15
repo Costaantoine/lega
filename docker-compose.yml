@@ -45,6 +45,8 @@ services:
       AIIA_ENDPOINT: ${AIIA_ENDPOINT:-http://localhost:8003/tts}
       BRIEF_HOUR: ${BRIEF_HOUR:-7}
       BRIEF_MINUTE: ${BRIEF_MINUTE:-0}
+    volumes:
+      - ./docs:/app/docs:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
