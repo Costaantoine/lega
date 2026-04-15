@@ -3,6 +3,7 @@ version: "3.8"
 networks:
   bvi-net:
     driver: bridge
+    name: bvi_bvi-net
 
 services:
   db:
@@ -82,6 +83,19 @@ services:
       - bvi-net
     depends_on:
       - api
+
+  searxng:
+    image: searxng/searxng:2025.2.2-ab1e895cc
+    container_name: bvi-searxng-1
+    restart: always
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    networks:
+      - bvi-net
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
 
 volumes:
   pg_data:

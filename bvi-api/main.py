@@ -31,11 +31,18 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # Agents nécessitant un abonnement
-PREMIUM_AGENTS = {"max_search", "sam_comms", "visa_vision"}
+PREMIUM_AGENTS = {"max_search", "lea_extract", "visa_vision"}
 
 # Mode gestion site : "agent" (automatique) ou "manual" (dashboard)
 SITE_MANAGEMENT_MODE = os.getenv("SITE_MANAGEMENT_MODE", "manual")
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
+
+# TTS / Avatar — hooks pour évolution future (Edge-TTS + Rhubarb lip-sync)
+# TTS_ENABLED=true  → text_to_speech(text, lang) active, audio base64 envoyé via WS
+# AVATAR_ENABLED=true → rendu avatar animé via AIIA endpoint
+TTS_ENABLED = os.getenv("TTS_ENABLED", "false").lower() == "true"
+AVATAR_ENABLED = os.getenv("AVATAR_ENABLED", "false").lower() == "true"
+AIIA_ENDPOINT = os.getenv("AIIA_ENDPOINT", "http://localhost:8003/tts")
 
 app = FastAPI(title="LEGA/BVI API", version="1.0.0")
 app.mount("/uploads", StaticFiles(directory="/app/uploads"), name="uploads")

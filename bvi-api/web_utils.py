@@ -6,6 +6,40 @@ logger = logging.getLogger(__name__)
 _cache: Dict[str, tuple] = {}
 DB_URL = os.getenv("DATABASE_URL", "postgresql://bvi_user:BviSecure2026!@db:5432/bvi_db")
 
+# SearXNG — instance locale Docker (port 8888 sur host, port 8080 dans le réseau bvi-net)
+SEARXNG_URL = os.getenv("SEARXNG_URL", "http://bvi-searxng-1:8080")
+
+async def search_web(query: str, max_results: int = 5, lang: str = "fr") -> List[Dict]:
+    """
+    Recherche web via SearXNG local.
+    Retourne une liste de {title, url, content} injectables dans un prompt LLM.
+    Fallback silencieux si SearXNG indisponible.
+    """
+    try:
+        params = {
+            "q": query,
+            "format": "json",
+            "language": lang,
+            "categories": "general",
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{SEARXNG_URL}/search", params=params)
+            if resp.status_code != 200:
+                logger.warning(f"SearXNG HTTP {resp.status_code}")
+                return []
+            data = resp.json()
+            results = []
+            for r in data.get("results", [])[:max_results]:
+                results.append({
+                    "title": r.get("title", "")[:120],
+                    "url": r.get("url", ""),
+                    "content": r.get("content", "")[:300],
+                })
+            return results
+    except Exception as e:
+        logger.warning(f"SearXNG indisponible: {e}")
+        return []
+
 def parse_robust(html: str, source_name: str) -> List[Dict]:
     """Parser hybride : CSS -> Fallback Regex -> Toujours un résultat"""
     listings = []

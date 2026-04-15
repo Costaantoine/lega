@@ -1,0 +1,64 @@
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "LEGA Search"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "fr"
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "searxng-lega-secret-key-2026-bvi"
+  bind_address: "0.0.0.0"
+  port: 8080
+  limiter: false
+  image_proxy: false
+  method: "GET"
+
+ui:
+  static_use_hash: false
+
+outgoing:
+  request_timeout: 15.0
+  max_request_timeout: 30.0
+
+engines:
+  - name: startpage
+    engine: startpage
+    categories: general
+    disabled: false
+    weight: 3
+
+  - name: mojeek
+    engine: mojeek
+    categories: general
+    disabled: false
+    weight: 2
+
+  - name: wikipedia
+    engine: wikipedia
+    categories: general
+    language: fr
+    disabled: false
+    weight: 1
+
+  - name: bing
+    engine: bing
+    disabled: true
+
+  - name: brave
+    engine: brave
+    disabled: true
+
+  - name: google
+    engine: google
+    disabled: true
+
+  - name: duckduckgo
+    engine: duckduckgo
+    disabled: true
