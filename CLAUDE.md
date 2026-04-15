@@ -115,11 +115,48 @@ docker network connect bvi_bvi-net bvi-api-1
 - ✅ Fix httpx[http2] : warnings web_utils résolus
 - ✅ Multi-langue : detect_language() + override post-Tony + fallback machine_kw
 
-## 🔲 Prochaines étapes (Phase 2)
+## ✅ Session 2 — 2026-04-15
 
-- [ ] **Amélioration UI dashboard** : graphes monitoring, filtres avancés produits, pagination
-- [ ] **Tests utilisateur réels** : session avec PME TP, recueil feedback Tony
-- [ ] Authentification JWT dashboard admin (actuellement ouvert)
-- [ ] Interface client : afficher statut trial + bouton upgrade abonnement
-- [ ] Suivi paiement : lien Stripe/PayPal depuis message upsell
-- [ ] Sam Comms : intégration SMTP réelle pour envoi emails
+### ✅ Corrections DB
+- Swap Sam(gratuit) ↔ Léa(premium) + PREMIUM_AGENTS mis à jour
+- 7 nouveaux agents en DB : standardiste, agenda, comptable, documentation, traducteur, logistique, demandes_prix
+- Table users enrichie : preferences JSONB, brief_time, telegram_chat_id, role_type
+- Tables events + team_availability créées
+
+### ✅ Fix Docker + SearXNG
+- docker-compose.yml : `name: bvi_bvi-net` (fix déconnexion réseau au restart)
+- SearXNG installé port 8888 (version 2025.2.2, moteur Mojeek + Wikipedia)
+- `search_web()` dans web_utils.py — injecte résultats web dans prompts agents
+- Toutes les vars env propagées dans compose (SEARXNG_URL, TTS, BRIEF)
+- Traefik conflit port 80 : à régler via Coolify UI (pas BVI)
+
+### ✅ Hooks TTS/Avatar
+- TTS_ENABLED=false, AVATAR_ENABLED=false, AIIA_ENDPOINT dans .env + main.py
+- Architecture prête pour Edge-TTS → avatar animé (Tony + Standardiste)
+
+### ✅ Widget Standardiste (port 3001)
+- Agent Léa (gemma4:e2b) : réception client, consultation catalogue DB, sync
+- WebSocket routing : `preferred_agent=standardiste` bypass Tony
+- Shop page.tsx : bouton 📞 flottant → panel plein écran FR/PT/EN
+
+### ✅ Brief matinal Agenda
+- `send_morning_brief()` : planning du jour, catalogue, opportunités SearXNG, activité 24h
+- Cron 07:00 configurable (BRIEF_HOUR/MINUTE)
+- `POST /api/agenda/brief-now` : déclenchement manuel
+- Déduplication chat_id, fix timedelta fin de mois
+
+### ✅ Agent Documentation + RAG
+- `build_rag_index()` : indexe /app/docs/**/*.md|.txt en chunks 800 chars au startup
+- `rag_search()` : recherche mots-clés, top_k contexte
+- `run_documentation()` : gemma4:e2b, répond basé sur docs uniquement
+- docs/ : README + pelleteuse.md + guide_transport.md (base initiale)
+- Volume ./docs:/app/docs:ro dans compose
+
+## 🔲 Prochaines étapes (Session 3)
+
+- [ ] **Sam Comms SMTP** : mot de passe Gmail à demander à Antoine → intégration aiosmtplib
+- [ ] **Authentification JWT dashboard** : ADMIN_USER/PASS + middleware FastAPI + page login Next.js
+- [ ] **Tony routing documentation** : détecter intent "fiche technique / prix / transport" → agent documentation
+- [ ] **Enrichir docs/** : ajouter fiches constructeurs (CAT, Volvo, Komatsu), prix marché 2026
+- [ ] **Traefik** : désactiver traefik-c9es via Coolify UI (conflit port 80)
+- [ ] **Second VPS** : confirmer avec Antoine si existant et IP
