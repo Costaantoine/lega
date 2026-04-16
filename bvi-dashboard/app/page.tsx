@@ -7,6 +7,7 @@ import TasksPage from "./components/TasksPage";
 import ProductsPage from "./components/ProductsPage";
 import ActivationsPage from "./components/ActivationsPage";
 import SourceManager from "./components/SourceManager";
+import SiteVitrinePage from "./components/SiteVitrinePage";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://76.13.141.221:8002/api";
 
@@ -17,6 +18,7 @@ const NAV = [
   { id: "products", label: "Produits", icon: "📦" },
   { id: "activations", label: "Activations", icon: "🎁" },
   { id: "sources", label: "Sources", icon: "🔗" },
+  { id: "vitrine", label: "Site Vitrine", icon: "🌐" },
 ];
 
 export default function AdminDashboard() {
@@ -177,6 +179,7 @@ export default function AdminDashboard() {
               </div>
             </div>
           )}
+          {page === "vitrine" && <SiteVitrinePage />}
         </div>
       </div>
     </div>
