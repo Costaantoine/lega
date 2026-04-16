@@ -39,6 +39,9 @@ PREMIUM_AGENTS = {"max_search", "lea_extract", "visa_vision"}
 SITE_MANAGEMENT_MODE = os.getenv("SITE_MANAGEMENT_MODE", "manual")
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
 
+# URL backend vitrine (pour site_manager)
+LEGA_SITE_API = os.getenv("LEGA_SITE_API_URL", "http://lega-site-lega-backend-1:8000/api/site")
+
 # JWT Auth dashboard
 JWT_SECRET = os.getenv("JWT_SECRET", "changeme-secret-key")
 JWT_ALGORITHM = "HS256"
@@ -128,13 +131,14 @@ Detect language from these signals:
 - French words (pelleteuse, trouve, cherche, bonjour, devis) → lang=fr
 
 JSON format:
-{"intent":"machine_search|email_followup|image_analysis|documentation_search|watch_request|general_chat","lang":"fr|pt|en","agent":"max_search|sam_comms|visa_vision|documentation|null","ack_message":"short ack IN DETECTED LANGUAGE or null","estimated_delay":"string or null","direct_response":"full reply IN DETECTED LANGUAGE if general_chat, else null"}
+{"intent":"machine_search|email_followup|image_analysis|documentation_search|modifier_site|watch_request|general_chat","lang":"fr|pt|en","agent":"max_search|sam_comms|visa_vision|documentation|site_manager|null","ack_message":"short ack IN DETECTED LANGUAGE or null","estimated_delay":"string or null","direct_response":"full reply IN DETECTED LANGUAGE if general_chat, else null"}
 
 Rules:
 - machine_search (pelleteuse/escavadora/excavator/grue/tracteur) → agent=max_search
 - email_followup (email/devis/relancer/contactar) → agent=sam_comms
 - image_analysis (photo/image/analyser) → agent=visa_vision
 - documentation_search (fiche technique/ficha técnica/technical spec/certificat CE/douane/customs/transport/poids/dimensions/prix marché/documentation) → agent=documentation
+- modifier_site (changer slogan/couleur/téléphone/adresse/logo/section/modifier le site/atualizar site) → agent=site_manager
 - general_chat → agent=null, direct_response in detected language
 - ack_message and direct_response MUST be written in the detected language
 
@@ -145,7 +149,9 @@ Examples:
 "Bonjour que peux-tu faire" → {"intent":"general_chat","lang":"fr","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Je suis Tony, assistant LEGA. Je trouve des machines TP, rédige des emails et surveille le marché."}
 "Olá o que fazes?" → {"intent":"general_chat","lang":"pt","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Olá! Sou o Tony, assistente LEGA. Encontro máquinas TP, redijo e-mails e monitorizo o mercado."}
 "Quelle est la fiche technique de la pelleteuse CAT 320?" → {"intent":"documentation_search","lang":"fr","agent":"documentation","ack_message":"Je consulte la documentation technique...","estimated_delay":"30 secondes","direct_response":null}
-"What is the transport weight of a Volvo EC220?" → {"intent":"documentation_search","lang":"en","agent":"documentation","ack_message":"Checking technical documentation...","estimated_delay":"30 seconds","direct_response":null}"""
+"What is the transport weight of a Volvo EC220?" → {"intent":"documentation_search","lang":"en","agent":"documentation","ack_message":"Checking technical documentation...","estimated_delay":"30 seconds","direct_response":null}
+"Change le slogan en français par Votre partenaire machines TP" → {"intent":"modifier_site","lang":"fr","agent":"site_manager","ack_message":"Je modifie le slogan français du site...","estimated_delay":"5 secondes","direct_response":null}
+"Mets le téléphone à +351 912 000 000" → {"intent":"modifier_site","lang":"fr","agent":"site_manager","ack_message":"Je mets à jour le numéro de téléphone...","estimated_delay":"5 secondes","direct_response":null}"""
 
 
 async def notify_telegram(text: str) -> None:
@@ -288,6 +294,22 @@ async def tony_classify(message: str, client_lang: str = None) -> dict:
                     result["agent"] = "documentation"
                     result["ack_message"] = result.get("ack_message") or ack_by_lang[forced_lang]
                     result["estimated_delay"] = "30s"
+                    result["direct_response"] = None
+                # Override modifier_site si mots-clés gestion site présents
+                site_kw = {"slogan", "couleur", "color", "cor", "téléphone", "telefone", "phone",
+                           "adresse", "morada", "address", "modifier le site", "atualizar site",
+                           "update site", "change le site", "section", "logo", "site vitrine",
+                           "stat_", "changer le ", "mets le ", "modifie le "}
+                if result.get("intent") in ("general_chat",) and any(w in message.lower() for w in site_kw):
+                    ack_by_lang = {
+                        "pt": "A modificar o site vitrine...",
+                        "en": "Updating the site...",
+                        "fr": "Je modifie le site vitrine..."
+                    }
+                    result["intent"] = "modifier_site"
+                    result["agent"] = "site_manager"
+                    result["ack_message"] = result.get("ack_message") or ack_by_lang[forced_lang]
+                    result["estimated_delay"] = "5s"
                     result["direct_response"] = None
                 return result
     except Exception as e:
@@ -555,10 +577,115 @@ RÉPONSE LÉA:"""
         return fallback.get(lang, fallback["fr"])
 
 
+async def run_site_manager(payload: dict, lang: str) -> str:
+    """
+    Agent Site Manager : interprète une commande en langage naturel
+    et applique les modifications sur le backend vitrine (port 8003).
+    Réservé aux sessions admin (is_admin=True dans le WS).
+    """
+    message = payload.get("message", "")
+    lang_instr = {"fr": "Français.", "pt": "Português europeu.", "en": "English."}.get(lang, "Français.")
+
+    # Récupérer la config actuelle pour contexte
+    cfg_context = ""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(f"{LEGA_SITE_API}/config")
+            if r.status_code == 200:
+                rows = r.json()
+                cfg_context = "\n".join(f"  {row['key']}: {row['value']}" for row in rows if row.get("value"))
+    except Exception:
+        pass
+
+    prompt = f"""Tu es l'Agent Site Manager de LEGA. Tu modifies le site vitrine en répondant UNIQUEMENT avec un JSON d'action.
+
+CONFIG ACTUELLE DU SITE:
+{cfg_context or "(indisponible)"}
+
+CLÉS MODIFIABLES (site_config):
+- site_name, slogan_fr, slogan_pt, slogan_en, slogan_es, slogan_de, slogan_it
+- phone, email, address
+- color_primary (hex), color_secondary (hex)
+- stat_machines, stat_langues, stat_pays, stat_support
+
+SECTIONS ACTIVABLES (site_sections): hero, stats, search, catalogue, ai_banner, contact, footer
+
+COMMANDE ADMIN ({lang_instr}): {message}
+
+Réponds UNIQUEMENT avec ce JSON (une seule action):
+{{"action":"config_update"|"section_toggle","key":"nom_clé","value":"nouvelle_valeur","section":"nom_section","enabled":true|false,"confirmation":"message confirmatif court EN {lang.upper()}"}}
+
+Exemples:
+- "Change le slogan FR" → {{"action":"config_update","key":"slogan_fr","value":"Nouveau slogan","confirmation":"Slogan FR mis à jour."}}
+- "Désactive la section stats" → {{"action":"section_toggle","section":"stats","enabled":false,"confirmation":"Section stats désactivée."}}
+- "Mets le téléphone à +351 912 000 000" → {{"action":"config_update","key":"phone","value":"+351 912 000 000","confirmation":"Téléphone mis à jour."}}
+
+JSON:"""
+
+    action_json = None
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            res = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": AGENT_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {"temperature": 0.1, "num_predict": 200},
+                },
+            )
+            raw = res.json().get("message", {}).get("content", "")
+            start, end = raw.find("{"), raw.rfind("}") + 1
+            if start >= 0 and end > start:
+                action_json = json.loads(raw[start:end])
+    except Exception as e:
+        logger.error(f"site_manager LLM error: {e}")
+        return {"fr": "⚠️ Erreur LLM site_manager.", "pt": "⚠️ Erro LLM site_manager.", "en": "⚠️ LLM site_manager error."}.get(lang, "⚠️ Erreur.")
+
+    if not action_json:
+        return {"fr": "❌ Je n'ai pas compris la commande.", "pt": "❌ Não entendi o comando.", "en": "❌ Command not understood."}.get(lang, "❌")
+
+    confirmation = action_json.get("confirmation", "✅ Fait.")
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            action = action_json.get("action", "")
+            if action == "config_update":
+                key = action_json.get("key", "")
+                value = action_json.get("value", "")
+                if key and value:
+                    r = await client.post(
+                        f"{LEGA_SITE_API}/config/bulk",
+                        json={key: value},
+                    )
+                    if r.status_code != 200:
+                        return f"❌ Erreur API config: HTTP {r.status_code}"
+                    logger.info(f"site_manager: config_update {key}={value[:40]}")
+            elif action == "section_toggle":
+                section = action_json.get("section", "")
+                enabled = action_json.get("enabled", True)
+                if section:
+                    r = await client.patch(
+                        f"{LEGA_SITE_API}/sections/{section}",
+                        json={"enabled": enabled},
+                    )
+                    if r.status_code != 200:
+                        return f"❌ Erreur API sections: HTTP {r.status_code}"
+                    logger.info(f"site_manager: section_toggle {section}={enabled}")
+            else:
+                return {"fr": "❌ Action non reconnue.", "pt": "❌ Ação não reconhecida.", "en": "❌ Unknown action."}.get(lang, "❌")
+    except Exception as e:
+        logger.error(f"site_manager API call error: {e}")
+        return f"⚠️ Erreur appel API vitrine: {str(e)[:80]}"
+
+    await notify_telegram(f"🔧 <b>Site modifié</b> via site_manager\nCommande: {message[:150]}\nRésultat: {confirmation}")
+    return f"✅ {confirmation}"
+
+
 AGENT_EXECUTORS = {
     "max_search": run_max_search,
     "sam_comms": run_sam_comms,
     "documentation": run_documentation,
+    "site_manager": run_site_manager,
     "standardiste": lambda payload, lang: run_standardiste(payload.get("message", ""), lang),
 }
 
@@ -860,12 +987,23 @@ async def trigger_brief_now(lang: str = "fr"):
 # ── WebSocket ────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/stream")
-async def websocket_endpoint(ws: WebSocket):
+async def websocket_endpoint(ws: WebSocket, token: str = None):
     await ws.accept()
     session_id = str(uuid.uuid4())
     active_connections[session_id] = ws
     user_id = await get_or_create_user(session_id)
-    logger.info(f"WS connected: {session_id} (user {user_id[:8]})")
+
+    # Vérifier si session admin (JWT valide en query param)
+    is_admin = False
+    if token:
+        try:
+            jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            is_admin = True
+            logger.info(f"WS admin session: {session_id[:8]}")
+        except Exception:
+            pass
+
+    logger.info(f"WS connected: {session_id} (user {user_id[:8]}, admin={is_admin})")
 
     try:
         await ws.send_json({
@@ -923,8 +1061,23 @@ async def websocket_endpoint(ws: WebSocket):
 
             else:
                 # Agent requis → vérifier abonnement si premium
-                latency_map = {"max_search": 180, "sam_comms": 90, "visa_vision": 10, "documentation": 30}
+                latency_map = {"max_search": 180, "sam_comms": 90, "visa_vision": 10, "documentation": 30, "site_manager": 15}
                 estimated = latency_map.get(agent, 120)
+
+                # site_manager réservé aux sessions admin
+                if agent == "site_manager" and not is_admin:
+                    block_msg = {
+                        "fr": "🔒 La gestion du site est réservée à l'administrateur.",
+                        "pt": "🔒 A gestão do site é reservada ao administrador.",
+                        "en": "🔒 Site management is restricted to administrators.",
+                    }
+                    await ws.send_json({
+                        "type": "agent_response",
+                        "payload": block_msg.get(lang, block_msg["fr"]),
+                        "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "blocked"},
+                    })
+                    await asyncio.sleep(0.1)
+                    continue
 
                 if agent in PREMIUM_AGENTS:
                     sub_status = await check_subscription(user_id, agent)
