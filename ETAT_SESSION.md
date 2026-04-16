@@ -3,9 +3,20 @@
 
 ---
 
-## 🗓 Dernière mise à jour : 2026-04-16 (~02h30 UTC)
+## 🗓 Dernière mise à jour : 2026-04-16 (~16h20 UTC)
 
 ---
+
+## ✅ FAIT — Session 5 (2026-04-16)
+
+### Bureau IA (repo lega — /opt/bvi) — commit c3726f3
+- **NL/ZH traductions** : 42 clés × 2 langues insérées en DB
+  - NL : néerlandais (marché Benelux)
+  - ZH : chinois simplifié (marché Asie)
+  - Total DB : 10 langues (ar, de, en, es, fr, it, nl, pt, ru, zh)
+- **SiteVitrinePage** : LANGS étendu à 9 langues (+ nl, zh)
+- **AdminChatPage URL** : vérifié OK — NEXT_PUBLIC_API_URL → ws://76.13.141.221:8002 ✅
+- **Notif Telegram** : testée et confirmée opérationnelle ✅
 
 ## ✅ FAIT — Session 4 (2026-04-16)
 
@@ -46,13 +57,17 @@ Rien — tout est commité et poussé.
 - [ ] **Second VPS** : confirmer existence et IP pour déploiement client
 
 ### P2 — Développement immédiat (sans Antoine)
-- [ ] **AdminChatPage URL** : vérifier que le frontend pointe bien sur `ws://...8002/ws/stream`
-  (actuellement hardcodé dans AdminChatPage.tsx — à confirmer)
-- [ ] **Notif Telegram site_manager** : tester que la notif part bien après modification
-- [ ] **NL/ZH traductions** : nl et zh ont 0 clés — générer les traductions manquantes
+- [x] **AdminChatPage URL** : vérifié OK ✅
+- [x] **Notif Telegram site_manager** : opérationnelle ✅
+- [x] **NL/ZH traductions** : 42 clés chacune insérées ✅
 
 ### P3 — Infra
 - [ ] **Traefik** : traefik-c9es-traefik-1 en restarting → désactiver via Coolify UI
+
+### P4 — Prochains développements suggérés
+- [ ] **Vitrine frontend NL/ZH** : ajouter le sélecteur de langue NL/ZH sur le site client (port 3002)
+- [ ] **site_manager langues** : étendre les actions site_manager pour supporter nl/zh
+- [ ] **Scraper auto** : cron pour re-scraper tob.pt périodiquement (nouvelles annonces)
 
 ---
 
