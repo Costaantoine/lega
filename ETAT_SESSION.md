@@ -3,11 +3,20 @@
 
 ---
 
-## 🗓 Dernière mise à jour : 2026-04-16 (~16h20 UTC)
+## 🗓 Dernière mise à jour : 2026-04-16 (~16h35 UTC)
 
 ---
 
-## ✅ FAIT — Session 5 (2026-04-16)
+## ✅ FAIT — Session 5 (2026-04-16) — commit 9b5c7b7
+
+### Sam Comms SMTP — commit 9b5c7b7
+- **SMTP configuré** : `escritorio.ai.lega@gmail.com` via Gmail app password
+- **`run_sam_comms` mis à jour** : extrait destinataire par regex, envoie réellement l'email
+- **`_smtp_send()`** : STARTTLS + login, appelé via `run_in_executor` (non-bloquant)
+- **Test validé** depuis le container → email reçu ✅
+- `.env` : `SMTP_PASSWORD` renseigné, `docker-compose.yml` expose les 4 vars SMTP
+
+### Précédent — Session 5
 
 ### Bureau IA (repo lega — /opt/bvi) — commit c3726f3
 - **NL/ZH traductions** : 42 clés × 2 langues insérées en DB
@@ -53,7 +62,7 @@ Rien — tout est commité et poussé.
 ## ⏭ PROCHAINE ÉTAPE
 
 ### P1 — Bloqué, nécessite action Antoine
-- [ ] **Sam Comms SMTP** : mot de passe app Gmail `escritorio.ai.lega@gmail.com` → ajouter dans .env
+- [x] **Sam Comms SMTP** : configuré et testé ✅ (commit 9b5c7b7)
 - [ ] **Second VPS** : confirmer existence et IP pour déploiement client
 
 ### P2 — Développement immédiat (sans Antoine)
