@@ -40,11 +40,17 @@ services:
       SITE_MANAGEMENT_MODE: ${SITE_MANAGEMENT_MODE:-manual}
       AGENT_API_KEY: ${AGENT_API_KEY:-}
       SEARXNG_URL: ${SEARXNG_URL:-http://bvi-searxng-1:8080}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       TTS_ENABLED: ${TTS_ENABLED:-false}
       AVATAR_ENABLED: ${AVATAR_ENABLED:-false}
       AIIA_ENDPOINT: ${AIIA_ENDPOINT:-http://localhost:8003/tts}
       BRIEF_HOUR: ${BRIEF_HOUR:-7}
       BRIEF_MINUTE: ${BRIEF_MINUTE:-0}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASS: ${ADMIN_PASS:-Lega2026!}
     volumes:
       - ./docs:/app/docs:ro
     extra_hosts:

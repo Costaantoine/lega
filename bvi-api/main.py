@@ -3,9 +3,13 @@ import asyncio
 import json
 import logging
 import os
+import re
+import smtplib
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 
 import aiofiles
@@ -31,6 +35,11 @@ AGENT_MODEL = "gemma4:e2b"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+SMTP_FROM = os.getenv("SMTP_FROM", "")
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 # Agents nécessitant un abonnement
 PREMIUM_AGENTS = {"max_search", "lea_extract", "visa_vision"}
@@ -400,19 +409,40 @@ Génère une réponse structurée:
         return f"⚠️ Erreur Max Search: {str(e)[:100]}"
 
 
+def _smtp_send(to_addr: str, subject: str, body: str) -> None:
+    """Envoi synchrone via SMTP (appelé dans un thread executor)."""
+    msg = MIMEMultipart("alternative")
+    msg["From"] = SMTP_FROM
+    msg["To"] = to_addr
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+        server.ehlo()
+        server.starttls()
+        server.login(SMTP_FROM, SMTP_PASSWORD)
+        server.sendmail(SMTP_FROM, [to_addr], msg.as_string())
+
+
 async def run_sam_comms(payload: dict, lang: str) -> str:
-    """Sam Comms: génération d'emails professionnels (gemma4:e2b)."""
+    """Sam Comms: génération + envoi d'emails professionnels (gemma4:e2b)."""
     context_msg = payload.get("message", "")
     lang_instr = "Français professionnel." if lang == "fr" else ("Português europeu profissional (PT-PT)." if lang == "pt" else "Professional English.")
+
+    # Extraire adresse destinataire depuis le message
+    to_match = re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", context_msg)
+    to_addr = to_match.group(0) if to_match else None
+
     prompt = f"""Tu es Sam Comms, expert communication B2B pour PME TP.
 Langue: {lang_instr}
 
 DEMANDE: {context_msg}
 
-Génère:
-📧 OBJET EMAIL
-📝 CORPS DU MESSAGE (ton professionnel mais chaleureux, 3-5 paragraphes)
-📋 ACTIONS SUGGÉRÉES (suivi, relance, délai)"""
+Génère EXACTEMENT dans ce format:
+OBJET: <sujet de l'email en une ligne>
+---
+<corps du message complet, ton professionnel mais chaleureux, 3-5 paragraphes>
+---
+ACTIONS: <suivi suggéré, relance, délai>"""
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
             res = await client.post(
@@ -421,10 +451,41 @@ Génère:
                     "model": AGENT_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False, "think": False,
-                    "options": {"temperature": 0.4, "num_predict": 600},
+                    "options": {"temperature": 0.4, "num_predict": 700},
                 },
             )
-            return res.json().get("message", {}).get("content", "Résultat indisponible.")
+        content = res.json().get("message", {}).get("content", "")
+        if not content:
+            return "⚠️ Sam Comms: réponse vide du modèle."
+
+        # Parser sujet et corps
+        subject = "Email LEGA"
+        body = content
+        subj_match = re.search(r"OBJET\s*:\s*(.+)", content)
+        if subj_match:
+            subject = subj_match.group(1).strip()
+        parts = content.split("---")
+        if len(parts) >= 2:
+            body = parts[1].strip()
+
+        # Envoi si destinataire trouvé et SMTP configuré
+        send_status = ""
+        if to_addr and SMTP_FROM and SMTP_PASSWORD:
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _smtp_send, to_addr, subject, body)
+                send_status = f"\n\n✅ Email envoyé à {to_addr} depuis {SMTP_FROM}"
+                logger.info(f"sam_comms: email envoyé à {to_addr}, sujet: {subject}")
+            except Exception as e:
+                send_status = f"\n\n⚠️ Envoi échoué ({str(e)[:80]})"
+                logger.error(f"sam_comms SMTP error: {e}")
+        elif to_addr and not SMTP_PASSWORD:
+            send_status = "\n\n⚠️ SMTP non configuré — email non envoyé (mode brouillon)"
+        else:
+            send_status = "\n\n📋 Aucune adresse détectée — brouillon généré (ajoutez un destinataire pour envoyer)"
+
+        return content + send_status
+
     except Exception as e:
         return f"⚠️ Erreur Sam Comms: {str(e)[:100]}"
 
