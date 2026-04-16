@@ -256,7 +256,7 @@ async def tony_classify(message: str, client_lang: str = None) -> dict:
                 json={
                     "model": TONY_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
+                    "stream": False, "think": False,
                     "options": {"temperature": 0.1, "num_predict": 400},
                 },
             )
@@ -390,7 +390,7 @@ Génère une réponse structurée:
                 json={
                     "model": AGENT_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
+                    "stream": False, "think": False,
                     "options": {"temperature": 0.3, "num_predict": 800},
                 },
             )
@@ -420,7 +420,7 @@ Génère:
                 json={
                     "model": AGENT_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
+                    "stream": False, "think": False,
                     "options": {"temperature": 0.4, "num_predict": 600},
                 },
             )
@@ -510,7 +510,7 @@ Si l'information n'est pas dans la documentation, dis-le clairement."""
                 json={
                     "model": AGENT_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
+                    "stream": False, "think": False,
                     "options": {"temperature": 0.2, "num_predict": 600},
                 },
             )
@@ -562,7 +562,7 @@ RÉPONSE LÉA:"""
                 json={
                     "model": AGENT_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
+                    "stream": False, "think": False,
                     "options": {"temperature": 0.3, "num_predict": 300},
                 },
             )
@@ -630,7 +630,7 @@ JSON:"""
                 json={
                     "model": AGENT_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
+                    "stream": False, "think": False,
                     "options": {"temperature": 0.1, "num_predict": 200},
                 },
             )
@@ -1196,7 +1196,7 @@ async def chat_rest(message: dict):
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
             res = await client.post(
                 f"{OLLAMA_URL}/api/chat",
-                json={"model": TONY_MODEL, "messages": [{"role": "user", "content": full_prompt}], "stream": False, "options": {"temperature": 0.3, "num_predict": 2048}},
+                json={"model": TONY_MODEL, "messages": [{"role": "user", "content": full_prompt}], "stream": False, "think": False, "options": {"temperature": 0.3, "num_predict": 2048}},
             )
             reply = res.json().get("message", {}).get("content", "Pas de réponse")
         return {"content": reply, "model": TONY_MODEL}
@@ -1320,7 +1320,7 @@ Format:
 Sois concis et réaliste."""
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0)) as client:
-            res = await client.post(f"{OLLAMA_URL}/api/chat", json={"model": TONY_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False, "options": {"temperature": 0.3, "num_predict": 500}})
+            res = await client.post(f"{OLLAMA_URL}/api/chat", json={"model": TONY_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False, "think": False, "options": {"temperature": 0.3, "num_predict": 500}})
             return {"crew": "devis", "result": res.json().get("message", {}).get("content", "Erreur"), "model": TONY_MODEL}
     except Exception as e:
         return {"crew": "devis", "error": str(e)[:100]}
@@ -1346,7 +1346,7 @@ Format:
 💶 PRIX CONSEILLÉ (€ HT)
 📝 DESCRIPTION VENDEUR (3-4 lignes)"""
         async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0)) as client:
-            res = await client.post(f"{OLLAMA_URL}/api/chat", json={"model": TONY_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False, "options": {"temperature": 0.3, "num_predict": 400}})
+            res = await client.post(f"{OLLAMA_URL}/api/chat", json={"model": TONY_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False, "think": False, "options": {"temperature": 0.3, "num_predict": 400}})
             return {"crew": "fiche", "result": res.json().get("message", {}).get("content", "Erreur"), "model": TONY_MODEL, "lang": lang}
 
 
@@ -1365,7 +1365,7 @@ async def crew_argus(request: dict):
 Langue: {lang_instr}
 Donne: Fourchette basse/haute, facteurs influençant le prix, conseil de mise en vente."""
         async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0)) as client:
-            res = await client.post(f"{OLLAMA_URL}/api/chat", json={"model": TONY_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False, "options": {"temperature": 0.4, "num_predict": 350}})
+            res = await client.post(f"{OLLAMA_URL}/api/chat", json={"model": TONY_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False, "think": False, "options": {"temperature": 0.4, "num_predict": 350}})
             return {"crew": "argus", "result": res.json().get("message", {}).get("content", "Erreur"), "model": TONY_MODEL, "lang": lang}
 
 
@@ -1385,7 +1385,7 @@ Annonces tob.pt:
 Génère: 1) 3 alertes basées sur ces annonces, 2) Conseils prix, 3) Message client prêt à envoyer."""
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0)) as client:
-            res = await client.post(f"{OLLAMA_URL}/api/chat", json={"model": TONY_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False, "options": {"temperature": 0.4, "num_predict": 400}})
+            res = await client.post(f"{OLLAMA_URL}/api/chat", json={"model": TONY_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False, "think": False, "options": {"temperature": 0.4, "num_predict": 400}})
             return {"crew": "veille", "result": res.json().get("message", {}).get("content", "Erreur"), "model": TONY_MODEL, "lang": lang, "sources": listings}
     except Exception as e:
         return {"crew": "veille", "error": str(e)[:100]}

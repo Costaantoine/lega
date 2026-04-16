@@ -15,7 +15,7 @@ const badge = (c: string): React.CSSProperties => ({ display: 'inline-block', pa
 
 const STATUS_COLORS: Record<string, string> = { available: '#4ade80', sold: '#f87171', reserved: '#fb923c', new: '#60a5fa', archived: '#64748b' };
 
-type Tab = 'config' | 'products' | 'sections' | 'import';
+type Tab = 'config' | 'products' | 'sections' | 'translations' | 'import';
 
 export default function SiteVitrinePage() {
   const [tab, setTab] = useState<Tab>('config');
@@ -116,6 +116,35 @@ export default function SiteVitrinePage() {
     setSections(s => s.map(x => x.name === name ? { ...x, enabled } : x));
   };
 
+  // ── Translations ───────────────────────────────────────────────────────────
+  const LANGS = ['fr', 'pt', 'en', 'es', 'de', 'it', 'ar'];
+  const [tlLang, setTlLang] = useState('fr');
+  const [tlData, setTlData] = useState<Record<string, string>>({});
+  const [tlDirty, setTlDirty] = useState<Record<string, string>>({});
+  const [tlSaving, setTlSaving] = useState(false);
+
+  useEffect(() => {
+    if (tab !== 'translations') return;
+    fetch(`${SITE_API}/translations/${tlLang}`, { headers: ah() })
+      .then(r => r.json())
+      .then((d: Record<string, string>) => { setTlData(d); setTlDirty(d); })
+      .catch(() => {});
+  }, [tab, tlLang]);
+
+  const saveTl = async () => {
+    const changed: Record<string, string> = {};
+    Object.entries(tlDirty).forEach(([k, v]) => { if (v !== tlData[k]) changed[k] = v; });
+    if (!Object.keys(changed).length) { flash('Aucune modification'); return; }
+    setTlSaving(true);
+    await fetch(`${SITE_API}/translations/bulk`, {
+      method: 'PUT', headers: ahj(),
+      body: JSON.stringify({ lang: tlLang, translations: changed }),
+    });
+    setTlData(p => ({ ...p, ...changed }));
+    setTlSaving(false);
+    flash(`✅ ${Object.keys(changed).length} clé(s) sauvegardée(s) [${tlLang}]`);
+  };
+
   // ── Import ─────────────────────────────────────────────────────────────────
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<any>(null);
@@ -129,7 +158,7 @@ export default function SiteVitrinePage() {
     else if (d.ok) flash('ℹ️ Aucune nouvelle annonce (déjà importées)');
   };
 
-  const TABS: { id: Tab; label: string }[] = [{ id: 'config', label: '⚙️ Config' }, { id: 'products', label: '📦 Produits' }, { id: 'sections', label: '🧩 Sections' }, { id: 'import', label: '🔄 Import tob.pt' }];
+  const TABS: { id: Tab; label: string }[] = [{ id: 'config', label: '⚙️ Config' }, { id: 'products', label: '📦 Produits' }, { id: 'sections', label: '🧩 Sections' }, { id: 'translations', label: '🌍 Traductions' }, { id: 'import', label: '🔄 Import tob.pt' }];
 
   return (
     <div>
@@ -293,6 +322,35 @@ export default function SiteVitrinePage() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* ── TRANSLATIONS ── */}
+      {tab === 'translations' && (
+        <div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+            {LANGS.map(l => (
+              <button key={l} onClick={() => setTlLang(l)} style={{ padding: '5px 14px', borderRadius: 6, border: '1px solid', cursor: 'pointer', fontSize: 13, fontWeight: tlLang === l ? 700 : 400, borderColor: tlLang === l ? '#3b82f6' : '#334155', background: tlLang === l ? '#3b82f620' : '#1e293b', color: tlLang === l ? '#60a5fa' : '#94a3b8' }}>
+                {l.toUpperCase()}
+              </button>
+            ))}
+            <button onClick={saveTl} disabled={tlSaving} style={{ marginLeft: 'auto', padding: '6px 20px', background: tlSaving ? '#334155' : '#3b82f6', color: '#fff', border: 'none', borderRadius: 7, fontWeight: 700, cursor: tlSaving ? 'not-allowed' : 'pointer', fontSize: 13 }}>
+              {tlSaving ? '⏳ Sauvegarde...' : '💾 Sauvegarder'}
+            </button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            {Object.entries(tlDirty).map(([key, val]) => (
+              <div key={key} style={{ background: val !== tlData[key] ? '#1e3a5f' : '#1e293b', border: `1px solid ${val !== tlData[key] ? '#3b82f6' : '#334155'}`, borderRadius: 8, padding: '10px 12px' }}>
+                <label style={{ display: 'block', fontSize: 10, color: '#64748b', marginBottom: 4, fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{key}</label>
+                <input
+                  style={{ ...input, fontSize: 13 }}
+                  value={val}
+                  onChange={e => setTlDirty(p => ({ ...p, [key]: e.target.value }))}
+                />
+              </div>
+            ))}
+          </div>
+          {Object.keys(tlDirty).length === 0 && <div style={{ textAlign: 'center', padding: 40, color: '#475569' }}>Chargement…</div>}
         </div>
       )}
 
