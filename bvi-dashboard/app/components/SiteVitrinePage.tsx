@@ -117,7 +117,7 @@ export default function SiteVitrinePage() {
   };
 
   // ── Translations ───────────────────────────────────────────────────────────
-  const LANGS = ['fr', 'pt', 'en', 'es', 'de', 'it', 'ar'];
+  const LANGS = ['fr', 'pt', 'en', 'es', 'de', 'it', 'ar', 'nl', 'zh'];
   const [tlLang, setTlLang] = useState('fr');
   const [tlData, setTlData] = useState<Record<string, string>>({});
   const [tlDirty, setTlDirty] = useState<Record<string, string>>({});
