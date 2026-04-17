@@ -40,7 +40,14 @@
       "Bash(docker restart *)",
       "Bash(git commit *)",
       "Bash(docker rm *)",
-      "Bash(zip -r lega-test-archive-2026-04-15.zip lega-test/ -x \"lega-test/node_modules/*\")"
+      "Bash(zip -r lega-test-archive-2026-04-15.zip lega-test/ -x \"lega-test/node_modules/*\")",
+      "Bash(mkdir -p /opt/lega-site)",
+      "Read(//opt/**)",
+      "Bash(gh auth *)",
+      "Bash(git -C /opt/bvi remote -v)",
+      "Bash(git *)",
+      "Bash(mkdir -p /opt/lega-site/frontend/public/locales)",
+      "Bash(cp /opt/lega-site/frontend/locales/*.json /opt/lega-site/frontend/public/locales/)"
     ]
   }
 }

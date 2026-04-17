@@ -11,7 +11,7 @@ const API_BASE = API.replace("/api", "");
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Msg = { role: "user" | "agent"; text: string; time?: string; uploading?: boolean };
+type Msg = { role: "user" | "agent"; text: string; time?: string; uploading?: boolean; streaming?: boolean };
 type Product = { id: number; title: string; price: number; currency: string; status: string; images?: any; category: string; description?: string };
 type Tab = "chat" | "catalogue" | "upload";
 type StdLang = "fr" | "pt" | "en";
@@ -156,10 +156,26 @@ export default function ClientApp() {
           return;
         }
 
+        if (d.type === "text_chunk") {
+          const chunk = stripEmoji(d.payload || "");
+          if (!chunk) return;
+          setStdMsgs(p => {
+            const last = p[p.length - 1];
+            if (last?.streaming) return [...p.slice(0, -1), { ...last, text: last.text + chunk }];
+            return [...p, { role: "agent", text: chunk, streaming: true, time: now() }];
+          });
+          return;
+        }
+
         if (d.type === "agent_response") {
           const text = stripEmoji(d.payload || "");
           if (d.metadata?.agent === "standardiste") {
-            setStdMsgs(p => [...p, { role: "agent", text, time: now() }]);
+            setStdMsgs(p => {
+              const last = p[p.length - 1];
+              if (last?.streaming) return [...p.slice(0, -1), { ...last, streaming: false }];
+              if (!text) return p;
+              return [...p, { role: "agent", text, time: now() }];
+            });
             setStdLoading(false);
           } else {
             setMsgs(p => [...p, { role: "agent", text, time: now() }]);

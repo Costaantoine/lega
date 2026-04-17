@@ -3,9 +3,23 @@
 
 ---
 
-## 🗓 Dernière mise à jour : 2026-04-16 (~16h35 UTC)
+## 🗓 Dernière mise à jour : 2026-04-17 (~08h20 UTC)
 
 ---
+
+## ✅ FAIT — Session 6 (2026-04-17) — commits fbd3275 + 84eb724
+
+### Vitrine port 3002 — commit fbd3275 (lega-vitrine)
+- **Bug Standardiste** : `run_standardiste` interrogeait table BVI `products` (3 entrées, status=published) → corrigé pour appeler `LEGA_SITE_API/products?status=available` (56 produits) + gestion prix null → "Prix sur demande"
+- **Logo navbar** : `<img src={cfg["logo_url"]}>` configurable depuis site_config, fallback texte LEGA.PT
+- **LEGA Trading → LEGA.PT** : navbar, hero h1 fallback, footer, layout metadata
+- **Message d'accueil** : multilingue sans emojis "Bonjour et bienvenue sur notre vitrine. Je m'appelle Léa..." (8 langues)
+- **Strip emojis** : `stripEmoji()` sur toutes les réponses agent dans le widget chat
+- **Image hero** : photo gros engin TP déjà en place (no change needed)
+
+### Shop port 3001 — commit 84eb724 (lega/bvi)
+- **Tony → Léa** : welcome FR/PT, uploadDesc, analyzeBtn, hint upload, bouton catalogue
+- **Strip emojis** : `stripEmoji()` sur les réponses agent dans le WS handler
 
 ## ✅ FAIT — Session 5 (2026-04-16) — commit 9b5c7b7
 
