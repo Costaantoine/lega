@@ -589,17 +589,22 @@ async def run_standardiste(message: str, lang: str) -> str:
         "en": "English. Your name is Lea, you are LEGA's receptionist.",
     }.get(lang, "Français.")
 
-    # Catalogue récent (5 produits publiés)
+    # Catalogue depuis la vitrine (site_products, status=available)
     catalogue_context = ""
     try:
-        conn = await db_connect()
-        rows = await conn.fetch(
-            "SELECT title, price, currency, category FROM products WHERE status='published' ORDER BY created_at DESC LIMIT 5"
-        )
-        await conn.close()
-        if rows:
-            items = [f"• {r['title']} — {r['price']}{r['currency']}" for r in rows]
-            catalogue_context = "\nCATALOGUE DISPONIBLE:\n" + "\n".join(items)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(f"{LEGA_SITE_API}/products?status=available&limit=8")
+            if r.status_code == 200:
+                data = r.json()
+                items_list = data.get("items", data) if isinstance(data, dict) else data
+                items = [
+                    f"• {p['title']} — {p['price']} {p.get('currency','€')} ({p.get('category','')})"
+                    if p.get('price') else
+                    f"• {p['title']} — Prix sur demande ({p.get('category','')})"
+                    for p in (items_list or [])[:8]
+                ]
+                if items:
+                    catalogue_context = "\nCATALOGUE DISPONIBLE:\n" + "\n".join(items)
     except Exception:
         pass
 

@@ -1,6 +1,10 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
 
+const stripEmoji = (s: string) =>
+  s.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F1E0}-\u{1F1FF}]/gu, "")
+   .replace(/\s{2,}/g, " ").trim();
+
 const API = process.env.NEXT_PUBLIC_API_URL || "http://76.13.141.221:8002/api";
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://76.13.141.221:8002/ws";
 const API_BASE = API.replace("/api", "");
@@ -24,10 +28,10 @@ const T: any = {
     placeholder: "Votre question...", send: "Envoyer",
     tabs: { chat: "💬 Chat", catalogue: "📦 Catalogue", upload: "📸 Photo" },
     connecting: "Connexion...", connected: "En ligne", disconnected: "Hors ligne",
-    lang: "🇫🇷 FR", welcome: "Bonjour ! Je suis Tony, votre assistant LEGA.\n\nJe peux vous aider à :\n• 🔍 Trouver des machines TP (pelleteuses, grues, chargeuses...)\n• 📧 Rédiger des emails professionnels\n• 💰 Estimer la valeur de vos machines\n• 🔔 Surveiller le marché\n\nPosez votre question !",
+    lang: "🇫🇷 FR", welcome: "Bonjour ! Je suis Léa, votre assistante LEGA.\n\nJe peux vous aider à :\n• Trouver des machines TP (pelleteuses, grues, chargeuses...)\n• Rédiger des emails professionnels\n• Estimer la valeur de vos machines\n• Surveiller le marché\n\nPosez votre question !",
     noProducts: "Aucun produit disponible", loading: "Chargement...",
-    uploadTitle: "📸 Analyser une photo", uploadDesc: "Prenez une photo de machine ou sélectionnez-en une depuis votre galerie. Tony l'analysera pour vous.",
-    uploadBtn: "Choisir / Prendre une photo", analyzeBtn: "Analyser avec Tony",
+    uploadTitle: "Analyser une photo", uploadDesc: "Prenez une photo de machine ou sélectionnez-en une depuis votre galerie. Léa l'analysera pour vous.",
+    uploadBtn: "Choisir / Prendre une photo", analyzeBtn: "Analyser",
     analyzing: "Analyse en cours...",
   },
   pt: {
@@ -35,10 +39,10 @@ const T: any = {
     placeholder: "A sua pergunta...", send: "Enviar",
     tabs: { chat: "💬 Chat", catalogue: "📦 Catálogo", upload: "📸 Foto" },
     connecting: "A ligar...", connected: "Online", disconnected: "Offline",
-    lang: "🇵🇹 PT", welcome: "Olá! Sou o Tony, o seu assistente LEGA.\n\nPosso ajudá-lo a:\n• 🔍 Encontrar máquinas TP (escavadoras, gruas, carregadoras...)\n• 📧 Redigir e-mails profissionais\n• 💰 Estimar o valor das suas máquinas\n• 🔔 Monitorizar o mercado\n\nFaça a sua pergunta!",
+    lang: "🇵🇹 PT", welcome: "Olá! Sou a Léa, a sua assistente LEGA.\n\nPosso ajudá-lo a:\n• Encontrar máquinas TP (escavadoras, gruas, carregadoras...)\n• Redigir e-mails profissionais\n• Estimar o valor das suas máquinas\n• Monitorizar o mercado\n\nFaça a sua pergunta!",
     noProducts: "Nenhum produto disponível", loading: "A carregar...",
-    uploadTitle: "📸 Analisar uma foto", uploadDesc: "Tire uma foto de uma máquina ou selecione uma da sua galeria. O Tony analisá-la-á.",
-    uploadBtn: "Escolher / Tirar foto", analyzeBtn: "Analisar com Tony",
+    uploadTitle: "Analisar uma foto", uploadDesc: "Tire uma foto de uma máquina ou selecione uma da sua galeria. Léa analisá-la-á.",
+    uploadBtn: "Escolher / Tirar foto", analyzeBtn: "Analisar",
     analyzing: "A analisar...",
   },
 };
@@ -124,11 +128,12 @@ export default function ClientApp() {
       try {
         const d = JSON.parse(e.data);
         if (d.type === "agent_response") {
+          const text = stripEmoji(d.payload || "");
           if (d.metadata?.agent === "standardiste") {
-            setStdMsgs(p => [...p, { role: "agent", text: d.payload, time: now() }]);
+            setStdMsgs(p => [...p, { role: "agent", text, time: now() }]);
             setStdLoading(false);
           } else {
-            setMsgs(p => [...p, { role: "agent", text: d.payload, time: now() }]);
+            setMsgs(p => [...p, { role: "agent", text, time: now() }]);
           }
         }
       } catch { }
@@ -306,7 +311,7 @@ export default function ClientApp() {
                   setInput(lang === "fr" ? `Je suis intéressé par "${selectedProduct.title}" à ${selectedProduct.price}${selectedProduct.currency}, pouvez-vous m'en dire plus ?` : `Tenho interesse na "${selectedProduct.title}" a ${selectedProduct.price}${selectedProduct.currency}, pode dar-me mais informações?`);
                   setTab("chat");
                 }} style={{ width: "100%", padding: "12px", borderRadius: 10, border: "none", background: "#3b82f6", color: "#fff", cursor: "pointer", fontSize: 15, fontWeight: 600 }}>
-                  💬 {lang === "fr" ? "En savoir plus (via Tony)" : "Saber mais (via Tony)"}
+                  {lang === "fr" ? "En savoir plus" : "Saber mais"}
                 </button>
               </div>
             ) : (
@@ -354,9 +359,9 @@ export default function ClientApp() {
                 </div>
               )}
               <div style={{ marginTop: 20, padding: "12px 14px", background: "#1e293b", borderRadius: 10, fontSize: 13, color: "#64748b" }}>
-                💡 {lang === "fr"
-                  ? "Après analyse, Tony vous donnera le type de machine, son état apparent et une estimation de valeur."
-                  : "Após a análise, o Tony indicará o tipo de máquina, o estado aparente e uma estimativa de valor."}
+                {lang === "fr"
+                  ? "Après analyse, Léa vous donnera le type de machine, son état apparent et une estimation de valeur."
+                  : "Após a análise, Léa indicará o tipo de máquina, o estado aparente e uma estimativa de valor."}
               </div>
             </div>
           </div>
