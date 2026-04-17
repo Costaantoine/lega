@@ -72,6 +72,11 @@ export default function ClientApp() {
   const [stdMsgs, setStdMsgs] = useState<Msg[]>([]);
   const [stdInput, setStdInput] = useState("");
   const [stdLoading, setStdLoading] = useState(false);
+  const [ttsEnabled, setTtsEnabled] = useState(false);
+  const ttsEnabledRef = useRef(false);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const audioQueueRef = useRef<AudioBuffer[]>([]);
+  const audioPlayingRef = useRef(false);
   const stdEnd = useRef<HTMLDivElement>(null);
 
   const ws = useRef<WebSocket | null>(null);
@@ -91,6 +96,9 @@ export default function ClientApp() {
       setStdMsgs([{ role: "agent", text: STD_GREET[stdLang], time: now() }]);
     }
   }, [stdOpen, stdLang]);
+
+  // Sync TTS ref
+  useEffect(() => { ttsEnabledRef.current = ttsEnabled; }, [ttsEnabled]);
 
   // Standardiste — scroll to bottom
   useEffect(() => {
@@ -124,9 +132,30 @@ export default function ClientApp() {
     setWsStatus("connecting");
     const socket = new WebSocket(`${WS_URL}/stream`);
     socket.onopen = () => { setWsStatus("connected"); reconnect.current = 0; };
+    const playNext = (ctx: AudioContext) => {
+      if (audioPlayingRef.current || audioQueueRef.current.length === 0) return;
+      audioPlayingRef.current = true;
+      const buf = audioQueueRef.current.shift()!;
+      const src = ctx.createBufferSource();
+      src.buffer = buf; src.connect(ctx.destination);
+      src.onended = () => { audioPlayingRef.current = false; playNext(ctx); };
+      src.start(0);
+    };
+
     socket.onmessage = (e) => {
       try {
         const d = JSON.parse(e.data);
+
+        if (d.type === "audio_chunk" && ttsEnabledRef.current) {
+          if (!audioCtxRef.current) audioCtxRef.current = new AudioContext();
+          const ctx = audioCtxRef.current;
+          const bytes = Uint8Array.from(atob(d.payload), c => c.charCodeAt(0));
+          ctx.decodeAudioData(bytes.buffer.slice(0), buf => {
+            audioQueueRef.current.push(buf); playNext(ctx);
+          });
+          return;
+        }
+
         if (d.type === "agent_response") {
           const text = stripEmoji(d.payload || "");
           if (d.metadata?.agent === "standardiste") {
@@ -405,6 +434,13 @@ export default function ClientApp() {
                   color: stdLang === l ? "#fff" : "#94a3b8",
                 }}>{l.toUpperCase()}</button>
               ))}
+              <button onClick={() => {
+                if (!audioCtxRef.current) audioCtxRef.current = new AudioContext();
+                setTtsEnabled(v => !v);
+              }} title={ttsEnabled ? "Couper le son" : "Activer le son"} style={{
+                width: 30, height: 30, borderRadius: "50%", border: "1px solid #334155",
+                background: ttsEnabled ? "#3b82f6" : "#1e293b", color: "#fff", cursor: "pointer", fontSize: 14,
+              }}>{ttsEnabled ? "🔊" : "🔇"}</button>
               <button onClick={() => setStdOpen(false)} style={{
                 width: 30, height: 30, borderRadius: "50%", border: "1px solid #334155",
                 background: "#1e293b", color: "#94a3b8", cursor: "pointer", fontSize: 16,

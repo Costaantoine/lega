@@ -86,6 +86,18 @@ TTS_ENABLED = os.getenv("TTS_ENABLED", "false").lower() == "true"
 AVATAR_ENABLED = os.getenv("AVATAR_ENABLED", "false").lower() == "true"
 AIIA_ENDPOINT = os.getenv("AIIA_ENDPOINT", "http://localhost:8003/tts")
 
+VITRINE_MODEL = "gemma2:2b"
+TTS_VOICES: dict[str, str] = {
+    "fr": "fr-FR-DeniseNeural",
+    "pt": "pt-PT-RaquelNeural",
+    "en": "en-GB-SoniaNeural",
+    "es": "es-ES-ElviraNeural",
+    "de": "de-DE-KatjaNeural",
+    "it": "it-IT-ElsaNeural",
+    "ar": "ar-SA-ZariyahNeural",
+    "ru": "ru-RU-SvetlanaNeural",
+}
+
 app = FastAPI(title="LEGA/BVI API", version="1.0.0")
 app.mount("/uploads", StaticFiles(directory="/app/uploads"), name="uploads")
 app.add_middleware(
@@ -643,6 +655,143 @@ RÉPONSE LÉA:"""
         return fallback.get(lang, fallback["fr"])
 
 
+async def text_to_speech_edge(text: str, lang: str) -> bytes | None:
+    """Génère audio MP3 via Edge-TTS. Retourne None si TTS_ENABLED=false ou erreur."""
+    if not TTS_ENABLED or not text.strip():
+        return None
+    try:
+        import base64 as _b64
+        import io
+        import edge_tts
+        voice = TTS_VOICES.get(lang, TTS_VOICES["fr"])
+        communicate = edge_tts.Communicate(text.strip(), voice)
+        buf = io.BytesIO()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                buf.write(chunk["data"])
+        return buf.getvalue() or None
+    except Exception as e:
+        logger.warning(f"TTS edge error: {e}")
+        return None
+
+
+_SENTENCE_RE = re.compile(r'(?<=[.!?:])\s+')
+
+
+async def run_vitrine_bot_streaming(message: str, lang: str, websocket: "WebSocket") -> None:
+    """vitrine_bot : streaming Ollama gemma2:2b → phrases → TTS → WS audio_chunk."""
+    import base64
+
+    lang_instr = {
+        "fr": "Réponds en français. Tu t'appelles Léa.",
+        "pt": "Responde em português europeu. Chamas-te Léa.",
+        "en": "Reply in English. Your name is Lea.",
+        "es": "Responde en español. Te llamas Léa.",
+        "de": "Antworte auf Deutsch. Dein Name ist Léa.",
+        "it": "Rispondi in italiano. Ti chiami Léa.",
+    }.get(lang, "Réponds en français. Tu t'appelles Léa.")
+
+    catalogue_ctx = ""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.get(f"{LEGA_SITE_API}/products?status=available&limit=8")
+            if r.status_code == 200:
+                data = r.json()
+                items = data.get("items", data) if isinstance(data, dict) else data
+                lines = [
+                    f"- {p['title']} ({p.get('category','')}) : {p['price']} {p.get('currency','EUR')}"
+                    if p.get("price") else
+                    f"- {p['title']} ({p.get('category','')}) : prix sur demande"
+                    for p in (items or [])[:8]
+                ]
+                if lines:
+                    catalogue_ctx = "\nCATALOGUE DISPONIBLE:\n" + "\n".join(lines)
+    except Exception:
+        pass
+
+    prompt = (
+        f"Tu es Léa, assistante vitrine LEGA, experte en engins TP d'occasion (pelleteuses, grues, chargeuses, bulldozers). "
+        f"{lang_instr}\n{catalogue_ctx}\n"
+        "Règles: 2-3 phrases max, professionnel, chaleureux, AUCUN emoji, AUCUN symbole spécial.\n"
+        "Si question produit → cite les machines disponibles ci-dessus.\n"
+        f"QUESTION: {message}\nRÉPONSE:"
+    )
+
+    full_text = ""
+    buf = ""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=5.0)) as client:
+            async with client.stream(
+                "POST",
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": VITRINE_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": True, "think": False,
+                    "options": {"temperature": 0.3, "num_predict": 250},
+                },
+            ) as resp:
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        token = json.loads(line).get("message", {}).get("content", "")
+                    except json.JSONDecodeError:
+                        continue
+                    if not token:
+                        continue
+                    buf += token
+                    full_text += token
+
+                    # Flush complete sentences
+                    parts = _SENTENCE_RE.split(buf)
+                    for sentence in parts[:-1]:
+                        sentence = sentence.strip()
+                        if not sentence:
+                            continue
+                        await websocket.send_json({"type": "text_chunk", "payload": sentence + " "})
+                        if TTS_ENABLED:
+                            audio = await text_to_speech_edge(sentence, lang)
+                            if audio:
+                                await websocket.send_json({
+                                    "type": "audio_chunk",
+                                    "payload": base64.b64encode(audio).decode(),
+                                    "lang": lang,
+                                })
+                    buf = parts[-1]
+
+        # Flush remaining buffer
+        if buf.strip():
+            await websocket.send_json({"type": "text_chunk", "payload": buf.strip()})
+            if TTS_ENABLED:
+                audio = await text_to_speech_edge(buf.strip(), lang)
+                if audio:
+                    await websocket.send_json({
+                        "type": "audio_chunk",
+                        "payload": base64.b64encode(audio).decode(),
+                        "lang": lang,
+                    })
+
+        await websocket.send_json({
+            "type": "agent_response",
+            "payload": re.sub(r'\s+', ' ', full_text).strip(),
+            "metadata": {"agent": "vitrine_bot", "lang": lang},
+        })
+
+    except Exception as e:
+        logger.error(f"vitrine_bot_streaming error: {e}")
+        fb = {
+            "fr": "Je rencontre une difficulté technique. Veuillez réessayer.",
+            "pt": "Encontrei uma dificuldade técnica. Por favor tente novamente.",
+            "en": "I encountered a technical issue. Please try again.",
+        }
+        await websocket.send_json({
+            "type": "agent_response",
+            "payload": fb.get(lang, fb["fr"]),
+            "metadata": {"agent": "vitrine_bot", "lang": lang},
+        })
+
+
 async def run_site_manager(payload: dict, lang: str) -> str:
     """
     Agent Site Manager : interprète une commande en langage naturel
@@ -1093,6 +1242,13 @@ async def websocket_endpoint(ws: WebSocket, token: str = None):
 
             client_lang = payload_raw.get("lang")
             preferred_agent = payload_raw.get("preferred_agent")
+
+            # Routing direct vitrine_bot (streaming + TTS)
+            if preferred_agent == "vitrine_bot":
+                lang = detect_language(user_msg, client_lang)
+                await run_vitrine_bot_streaming(user_msg, lang, ws)
+                await asyncio.sleep(0.05)
+                continue
 
             # Routing direct Standardiste — bypass Tony classification
             if preferred_agent == "standardiste":
