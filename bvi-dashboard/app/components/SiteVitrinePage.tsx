@@ -357,14 +357,24 @@ export default function SiteVitrinePage() {
       {/* ── IMPORT ── */}
       {tab === 'import' && (
         <div>
+          <div style={{ ...card, marginBottom: 14, background: '#0f2a1e', border: '1px solid #166534' }}>
+            <strong style={{ display: 'block', marginBottom: 8, color: '#4ade80', fontSize: 13 }}>⏰ Cron scraper actif — toutes les 24h</strong>
+            <p style={{ fontSize: 12, color: '#64748b', margin: '0 0 12px' }}>
+              Le backend scrape automatiquement tob.pt toutes les 24h au démarrage du container.
+              Seules les nouvelles annonces (source_url inconnue) sont insérées.
+            </p>
+            <button onClick={runImport} disabled={importing} style={{ padding: '8px 20px', background: importing ? '#334155' : '#166534', color: '#4ade80', border: '1px solid #166534', borderRadius: 6, fontWeight: 700, cursor: importing ? 'not-allowed' : 'pointer', fontSize: 13 }}>
+              {importing ? '⏳ Scrape en cours...' : '▶ Lancer un scrape maintenant'}
+            </button>
+          </div>
           <div style={card}>
-            <strong style={{ display: 'block', marginBottom: 12, color: '#e2e8f0' }}>Import depuis tob.pt</strong>
+            <strong style={{ display: 'block', marginBottom: 12, color: '#e2e8f0' }}>Import manuel depuis tob.pt</strong>
             <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 14px' }}>
               Importe les annonces machines depuis le catalogue <strong style={{ color: '#94a3b8' }}>tob.pt/pt/machinery.aspx</strong>.
               Les annonces déjà importées sont ignorées (déduplication par URL).
             </p>
             <label style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginBottom: 6, textTransform: 'uppercase' }}>Nombre max d'annonces</label>
-            <input style={{ ...input, width: 120, marginBottom: 14 }} type="number" min={1} max={100} value={maxItems} onChange={e => setMaxItems(e.target.value)} />
+            <input style={{ ...input, width: 120, marginBottom: 14 }} type="number" min={1} max={200} value={maxItems} onChange={e => setMaxItems(e.target.value)} />
             <div style={{ marginBottom: 14, fontSize: 12, color: '#475569' }}>
               ℹ️ tob.pt ne propose pas de recherche par mot-clé — l'import couvre tout le catalogue machines.
             </div>
