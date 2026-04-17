@@ -3,67 +3,63 @@
 
 ---
 
-## 🗓 Dernière mise à jour : 2026-04-17 (~08h20 UTC)
+## 🗓 Dernière mise à jour : 2026-04-17 (~10h30 UTC)
+
+---
+
+## ✅ FAIT — Session 7 (2026-04-17)
+
+### 1. Cron scraper tob.pt — commit 440b9d6 (lega-vitrine)
+- **`_scrape_tob_once()`** : fonction partagée cron + endpoint manuel
+- **`tob_scraper_cron()`** : boucle asyncio, lance au démarrage, intervalle configurable `TOB_SCRAPE_INTERVAL_H` (défaut 24h)
+- **`POST /api/site/scraper/run`** : déclenchement immédiat sans attendre le cron
+- **`POST /api/site/import/tob`** : délègue désormais à `_scrape_tob_once` (code dédupliqué)
+- Test au démarrage : 7 nouveaux produits détectés ✅
+
+### 2. TTS streaming Léa — commit 087e7dc (lega/bvi)
+- **`run_standardiste_streaming()`** : streaming gemma4:e2b → phrases → edge-tts, même architecture que vitrine_bot
+- **WS routing** : `preferred_agent=standardiste` → streaming (était plain `agent_response`)
+- **bvi-shop/page.tsx** : gère `text_chunk` sur panel standardiste + `Msg.streaming` dans le type
+- Testé : FR 4 text_chunks + 4 audio_chunks ✅, PT 4 text_chunks + 4 audio_chunks ✅
+- Vitrine port 3002 : envoie `preferred_agent=vitrine_bot` → déjà streaming + TTS ✅
+
+### 3. CMS vitrine — commits 553e28e (lega-vitrine) + 40874b7 (lega/bvi)
+- **Couleurs dynamiques** : `C1`/`C2` lus depuis `cfg[color_primary/color_secondary]` au runtime
+  - Modification couleur dans dashboard → appliquée immédiatement au rechargement vitrine
+- **Dashboard tab Import** : bloc cron actif (badge vert) + bouton "Lancer un scrape maintenant"
+
+### 4. NL et ZH sur vitrine — commit 5abd7e2 (lega-vitrine)
+- **LANGS étendu à 10** : +nl (Néerlandais) +zh (Chinois simplifié)
+- 42 clés chacune en DB (vérifiées: `nav_home=Home/首页`)
+- Sélecteur navbar vitrine affiche NL et ZH
 
 ---
 
 ## ✅ FAIT — Session 6 (2026-04-17) — commits fbd3275 + 84eb724
 
 ### Vitrine port 3002 — commit fbd3275 (lega-vitrine)
-- **Bug Standardiste** : `run_standardiste` interrogeait table BVI `products` (3 entrées, status=published) → corrigé pour appeler `LEGA_SITE_API/products?status=available` (56 produits) + gestion prix null → "Prix sur demande"
-- **Logo navbar** : `<img src={cfg["logo_url"]}>` configurable depuis site_config, fallback texte LEGA.PT
+- **Bug Standardiste** : corrigé pour appeler `LEGA_SITE_API/products?status=available` (56 produits)
+- **Logo navbar** : `<img src={cfg["logo_url"]}>` configurable depuis site_config
 - **LEGA Trading → LEGA.PT** : navbar, hero h1 fallback, footer, layout metadata
-- **Message d'accueil** : multilingue sans emojis "Bonjour et bienvenue sur notre vitrine. Je m'appelle Léa..." (8 langues)
-- **Strip emojis** : `stripEmoji()` sur toutes les réponses agent dans le widget chat
-- **Image hero** : photo gros engin TP déjà en place (no change needed)
+- **Message d'accueil** : multilingue sans emojis (8 langues)
+- **Strip emojis** : sur toutes les réponses agent
 
 ### Shop port 3001 — commit 84eb724 (lega/bvi)
 - **Tony → Léa** : welcome FR/PT, uploadDesc, analyzeBtn, hint upload, bouton catalogue
-- **Strip emojis** : `stripEmoji()` sur les réponses agent dans le WS handler
+- **Strip emojis** : sur les réponses agent dans le WS handler
 
-## ✅ FAIT — Session 5 (2026-04-16) — commit 9b5c7b7
+---
+
+## ✅ FAIT — Session 5 (2026-04-16)
 
 ### Sam Comms SMTP — commit 9b5c7b7
-- **SMTP configuré** : `escritorio.ai.lega@gmail.com` via Gmail app password
-- **`run_sam_comms` mis à jour** : extrait destinataire par regex, envoie réellement l'email
-- **`_smtp_send()`** : STARTTLS + login, appelé via `run_in_executor` (non-bloquant)
-- **Test validé** depuis le container → email reçu ✅
-- `.env` : `SMTP_PASSWORD` renseigné, `docker-compose.yml` expose les 4 vars SMTP
+- SMTP configuré : `escritorio.ai.lega@gmail.com` via Gmail app password
+- Test validé depuis le container → email reçu ✅
 
-### Précédent — Session 5
-
-### Bureau IA (repo lega — /opt/bvi) — commit c3726f3
-- **NL/ZH traductions** : 42 clés × 2 langues insérées en DB
-  - NL : néerlandais (marché Benelux)
-  - ZH : chinois simplifié (marché Asie)
-  - Total DB : 10 langues (ar, de, en, es, fr, it, nl, pt, ru, zh)
-- **SiteVitrinePage** : LANGS étendu à 9 langues (+ nl, zh)
-- **AdminChatPage URL** : vérifié OK — NEXT_PUBLIC_API_URL → ws://76.13.141.221:8002 ✅
-- **Notif Telegram** : testée et confirmée opérationnelle ✅
-
-## ✅ FAIT — Session 4 (2026-04-16)
-
-### Bureau IA (repo lega — /opt/bvi) — commit 80ee761
-- **Fix critique gemma4:e2b** : ajout `"think": False` sur les 11 appels Ollama
-  - Sans ce flag, le modèle thinking laissait `content` vide → site_manager timeout 60s
-  - Avec le flag : réponse en ~2s
-- **Onglet 🌍 Traductions** dans SiteVitrinePage (5e onglet)
-  - 7 langues : FR/PT/EN/ES/DE/IT/AR
-  - Grille 2 colonnes, champs modifiés surlignés en bleu
-  - Sauvegarde bulk via PUT /api/site/translations/bulk
-- **Test e2e AdminChatPage validé** :
-  - WS admin (`/ws/stream?token=JWT`) fonctionne
-  - "Change le slogan FR en: Machines TP fiables au meilleur prix" → site modifié ✅
-  - Route : Tony → ack → run_site_manager → Ollama JSON → API vitrine → confirmation
-
-### Vitrine (repo lega-vitrine — /opt/lega-site) — commit b650e68
-- **Endpoint bulk** `PUT /api/site/translations/bulk` : upsert N clés en une transaction
-- **Import tob.pt** : 56 produits en base (était 16 → +40 nouvelles annonces)
-
-### Sessions précédentes (déjà fait)
-- Session 3 : SiteVitrinePage (4 tabs), AdminChatPage, Tony→site_manager routing
-- Session 2 : JWT dashboard, Tony routing documentation_search
-- Session 1 : CMS backend, scraper tob.pt, traductions DB 326 clés × 8 langues
+### Bureau IA — commit c3726f3
+- NL/ZH traductions : 42 clés × 2 langues insérées en DB
+- SiteVitrinePage : LANGS étendu à 9 langues
+- Notif Telegram : testée et confirmée ✅
 
 ---
 
@@ -73,24 +69,18 @@ Rien — tout est commité et poussé.
 
 ---
 
-## ⏭ PROCHAINE ÉTAPE
+## ⏭ PROCHAINES ÉTAPES
 
 ### P1 — Bloqué, nécessite action Antoine
-- [x] **Sam Comms SMTP** : configuré et testé ✅ (commit 9b5c7b7)
 - [ ] **Second VPS** : confirmer existence et IP pour déploiement client
 
-### P2 — Développement immédiat (sans Antoine)
-- [x] **AdminChatPage URL** : vérifié OK ✅
-- [x] **Notif Telegram site_manager** : opérationnelle ✅
-- [x] **NL/ZH traductions** : 42 clés chacune insérées ✅
+### P2 — Développement immédiat
+- [ ] **site_manager langues** : étendre les actions site_manager pour supporter nl/zh
+- [ ] **Enrichir docs/** : fiches constructeurs (CAT, Volvo, Komatsu), prix marché 2026, réglementation Portugal
+- [ ] **Scraper auto pages multiples** : tob.pt a plusieurs pages — scraper page 2, 3...
 
 ### P3 — Infra
 - [ ] **Traefik** : traefik-c9es-traefik-1 en restarting → désactiver via Coolify UI
-
-### P4 — Prochains développements suggérés
-- [ ] **Vitrine frontend NL/ZH** : ajouter le sélecteur de langue NL/ZH sur le site client (port 3002)
-- [ ] **site_manager langues** : étendre les actions site_manager pour supporter nl/zh
-- [ ] **Scraper auto** : cron pour re-scraper tob.pt périodiquement (nouvelles annonces)
 
 ---
 
@@ -128,4 +118,10 @@ docker logs lega-site-lega-backend-1 --tail=30
 
 # IMPORTANT : gemma4:e2b nécessite "think": False dans tous les appels Ollama
 # Sans ça : content="" → tous les agents retournent erreur/vide
+
+# Déclencher scrape tob.pt immédiat
+curl -X POST http://76.13.141.221:8003/api/site/scraper/run
+
+# Tester TTS standardiste
+# (voir script test WS dans session 7)
 ```
