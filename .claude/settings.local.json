@@ -47,7 +47,8 @@
       "Bash(git -C /opt/bvi remote -v)",
       "Bash(git *)",
       "Bash(mkdir -p /opt/lega-site/frontend/public/locales)",
-      "Bash(cp /opt/lega-site/frontend/locales/*.json /opt/lega-site/frontend/public/locales/)"
+      "Bash(cp /opt/lega-site/frontend/locales/*.json /opt/lega-site/frontend/public/locales/)",
+      "Bash(2>&1)"
     ]
   }
 }

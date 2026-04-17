@@ -239,25 +239,45 @@ async def activate_trial(user_id: str, agent_name: str) -> None:
         await conn.close()
 
 
+_SUPPORTED_LANGS = {"pt","en","fr","es","de","it","ru","ar","nl","zh"}
+
 def detect_language(text: str, client_lang: str = None) -> str:
-    """Pré-détection de langue par mots-clés. client_lang = hint envoyé par le client WS."""
-    # Si le client envoie explicitement une langue, on la respecte
-    if client_lang in ("pt", "en", "fr"):
+    """Pré-détection de langue. client_lang hint du client WS — toujours respecté si valide."""
+    if client_lang in _SUPPORTED_LANGS:
         return client_lang
     t = text.lower()
-    # Mots exclusivement portugais (pas "euros" qui est commun)
-    pt_keywords = {"escavadora","escavadoras","encontra","encontrar","procura","procurar",
-                   "máquina","maquina","abaixo","quero","olá","ola","obrigado","preço",
-                   "preco","pesquisar","comprar","vender","retro","giratória"}
-    # Mots exclusivement anglais
-    en_keywords = {"excavator","excavators","find","search","loader","crane","tractor",
-                   "buy","sell","equipment","under","hello","what","how","can you"}
-    pt_score = sum(1 for w in pt_keywords if w in t)
-    en_score = sum(1 for w in en_keywords if w in t)
-    if pt_score > 0:
-        return "pt"
-    if en_score > 0:
-        return "en"
+    # Arabic script detection (any Arabic character)
+    if any("\u0600" <= c <= "\u06FF" for c in text):
+        return "ar"
+    # Chinese script detection
+    if any("\u4E00" <= c <= "\u9FFF" for c in text):
+        return "zh"
+    # Cyrillic
+    if any("\u0400" <= c <= "\u04FF" for c in text):
+        return "ru"
+    pt_kw = {"escavadora","escavadoras","máquina","maquina","quero","olá","ola","obrigado",
+             "preço","preco","pesquisar","comprar","encontrar","procura","vender","giratória"}
+    en_kw = {"excavator","excavators","find","search","loader","crane","tractor",
+             "buy","sell","equipment","hello","what","how","can you","please"}
+    es_kw = {"excavadora","excavadoras","máquina","maquinaria","hola","busco","quiero",
+             "precio","comprar","vender","grúa","cargadora","camión","tractor"}
+    de_kw = {"bagger","kran","lader","kaufen","verkaufen","suche","preis","maschine",
+             "hallo","guten","wie viel","bulldozer","radlader"}
+    it_kw = {"escavatore","escavatori","gru","pala","bulldozer","cerco","prezzo",
+             "comprare","vendere","buongiorno","salve","macchina"}
+    nl_kw = {"graafmachine","kraan","lader","kopen","verkopen","zoek","prijs",
+             "machine","hallo","goedendag","bulldozer"}
+    scores = {
+        "pt": sum(1 for w in pt_kw if w in t),
+        "en": sum(1 for w in en_kw if w in t),
+        "es": sum(1 for w in es_kw if w in t),
+        "de": sum(1 for w in de_kw if w in t),
+        "it": sum(1 for w in it_kw if w in t),
+        "nl": sum(1 for w in nl_kw if w in t),
+    }
+    best = max(scores, key=scores.get)
+    if scores[best] > 0:
+        return best
     return "fr"
 
 
@@ -793,13 +813,17 @@ async def run_vitrine_bot_streaming(message: str, lang: str, websocket: "WebSock
     import base64
 
     lang_instr = {
-        "fr": "Réponds en français. Tu t'appelles Léa.",
-        "pt": "Responde em português europeu. Chamas-te Léa.",
-        "en": "Reply in English. Your name is Lea.",
-        "es": "Responde en español. Te llamas Léa.",
-        "de": "Antworte auf Deutsch. Dein Name ist Léa.",
-        "it": "Rispondi in italiano. Ti chiami Léa.",
-    }.get(lang, "Réponds en français. Tu t'appelles Léa.")
+        "fr": "Réponds en français.",
+        "pt": "Responde em português europeu (PT-PT).",
+        "en": "Reply in English.",
+        "es": "Responde en español.",
+        "de": "Antworte auf Deutsch.",
+        "it": "Rispondi in italiano.",
+        "ru": "Отвечай на русском языке.",
+        "ar": "أجب باللغة العربية.",
+        "nl": "Antwoord in het Nederlands.",
+        "zh": "用中文回答。",
+    }.get(lang, "Réponds en français.")
 
     catalogue_ctx = ""
     try:
@@ -809,22 +833,27 @@ async def run_vitrine_bot_streaming(message: str, lang: str, websocket: "WebSock
                 data = r.json()
                 items = data.get("items", data) if isinstance(data, dict) else data
                 lines = [
-                    f"- {p['title']} ({p.get('category','')}) : {p['price']} {p.get('currency','EUR')}"
+                    f"- {p.get('reference','') + ' ' if p.get('reference') else ''}{p['title']} : {p['price']} {p.get('currency','EUR')}"
                     if p.get("price") else
-                    f"- {p['title']} ({p.get('category','')}) : prix sur demande"
+                    f"- {p.get('reference','') + ' ' if p.get('reference') else ''}{p['title']} : prix sur demande"
                     for p in (items or [])[:8]
                 ]
                 if lines:
-                    catalogue_ctx = "\nCATALOGUE DISPONIBLE:\n" + "\n".join(lines)
+                    catalogue_ctx = "\nCATALOGUE:\n" + "\n".join(lines)
     except Exception:
         pass
 
     prompt = (
-        f"Tu es Léa, assistante vitrine LEGA, experte en engins TP d'occasion (pelleteuses, grues, chargeuses, bulldozers). "
-        f"{lang_instr}\n{catalogue_ctx}\n"
-        "Règles: 2-3 phrases max, professionnel, chaleureux, AUCUN emoji, AUCUN symbole spécial.\n"
-        "Si question produit → cite les machines disponibles ci-dessus.\n"
-        f"QUESTION: {message}\nRÉPONSE:"
+        f"Tu es Léa, assistante de la vitrine LEGA.PT, spécialisée en engins TP d'occasion.\n"
+        f"RÈGLE ABSOLUE DE LANGUE: détecte la langue du message client et réponds TOUJOURS dans cette même langue.\n"
+        f"Si message en espagnol → réponds en espagnol. Si en arabe → réponds en arabe. "
+        f"Si en allemand → réponds en allemand. Si en italien → réponds en italien. "
+        f"Si en anglais → réponds en anglais. Indice langue actuel: {lang_instr}\n"
+        f"Ne réponds JAMAIS en français si le message n'est pas en français.\n"
+        f"{catalogue_ctx}\n"
+        "RÈGLES: 1 à 2 phrases MAXIMUM. Ton calme et professionnel. "
+        "Zéro emoji. Zéro symbole. Zéro majuscules abusives. Réponse directe et naturelle.\n"
+        f"CLIENT: {message}\nLÉA:"
     )
 
     full_text = ""
@@ -1334,7 +1363,7 @@ async def websocket_endpoint(ws: WebSocket, token: str = None):
         await ws.send_json({
             "type": "agent_response",
             "payload": "🚜 Bonjour ! Je suis Tony, votre assistant LEGA. Comment puis-je vous aider ?",
-            "metadata": {"session_id": session_id, "llm": TONY_MODEL},
+            "metadata": {"session_id": session_id, "llm": TONY_MODEL, "agent": "tony"},
         })
 
         while True:
