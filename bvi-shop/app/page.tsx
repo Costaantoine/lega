@@ -169,6 +169,7 @@ export default function ClientApp() {
 
         if (d.type === "agent_response") {
           const text = stripEmoji(d.payload || "");
+          if (d.metadata?.agent === "tony") return; // Ignorer greeting Tony — ce chat affiche Léa
           if (d.metadata?.agent === "standardiste") {
             setStdMsgs(p => {
               const last = p[p.length - 1];

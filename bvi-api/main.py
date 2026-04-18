@@ -147,12 +147,13 @@ class AgentSiteAction(BaseModel):
 TONY_SYSTEM = """Respond ONLY with valid JSON. No text before or after.
 
 Detect language from these signals:
-- Portuguese words (escavadora, encontra, procura, máquina, abaixo, euros, quero, olá) → lang=pt
-- English words (excavator, find, search, machine, under, price, hello) → lang=en
-- French words (pelleteuse, trouve, cherche, bonjour, devis) → lang=fr
+- Portuguese words (escavadora, encontra, procura, máquina, abaixo, euros, quero, olá, bom dia) → lang=pt
+- English words (excavator, find, search, machine, under, price, hello, good morning) → lang=en
+- Spanish words (hola, buenos dias, buenas, máquina, excavadora, busca) → lang=es
+- French words (pelleteuse, trouve, cherche, bonjour, devis, quel, temps, demain) → lang=fr
 
 JSON format:
-{"intent":"machine_search|email_followup|image_analysis|documentation_search|modifier_site|watch_request|general_chat","lang":"fr|pt|en","agent":"max_search|sam_comms|visa_vision|documentation|site_manager|null","ack_message":"short ack IN DETECTED LANGUAGE or null","estimated_delay":"string or null","direct_response":"full reply IN DETECTED LANGUAGE if general_chat, else null"}
+{"intent":"machine_search|email_followup|image_analysis|documentation_search|modifier_site|watch_request|general_chat","lang":"fr|pt|en|es","agent":"max_search|sam_comms|visa_vision|documentation|site_manager|null","ack_message":"short ack IN DETECTED LANGUAGE or null","estimated_delay":"string or null","direct_response":"full reply IN DETECTED LANGUAGE if general_chat, else null"}
 
 Rules:
 - machine_search (pelleteuse/escavadora/excavator/grue/tracteur) → agent=max_search
@@ -160,15 +161,22 @@ Rules:
 - image_analysis (photo/image/analyser) → agent=visa_vision
 - documentation_search (fiche technique/ficha técnica/technical spec/certificat CE/douane/customs/transport/poids/dimensions/prix marché/documentation) → agent=documentation
 - modifier_site (changer slogan/couleur/téléphone/adresse/logo/section/modifier le site/atualizar site) → agent=site_manager
-- general_chat → agent=null, direct_response in detected language
-- ack_message and direct_response MUST be written in the detected language
+- general_chat → agent=null, direct_response MUST be a helpful answer IN DETECTED LANGUAGE
+- NEVER use direct_response to repeat a greeting or introduction — give a real answer
+- For off-topic questions (météo, etc.): redirect politely and suggest an alternative
+- For questions about internet/web access: answer honestly about SearXNG access
 
 Examples:
 "Trouve-moi une pelleteuse 10T moins de 10000 euros" → {"intent":"machine_search","lang":"fr","agent":"max_search","ack_message":"Je recherche une pelleteuse 10T sous 10 000€...","estimated_delay":"2-4 minutes","direct_response":null}
 "Encontra-me uma escavadora 10T abaixo de 10000 euros" → {"intent":"machine_search","lang":"pt","agent":"max_search","ack_message":"A pesquisar escavadora 10T abaixo de 10 000€...","estimated_delay":"2-4 minutos","direct_response":null}
 "Find me a 10T excavator under 10000 euros" → {"intent":"machine_search","lang":"en","agent":"max_search","ack_message":"Searching for a 10T excavator under €10,000...","estimated_delay":"2-4 minutes","direct_response":null}
-"Bonjour que peux-tu faire" → {"intent":"general_chat","lang":"fr","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Je suis Tony, assistant LEGA. Je trouve des machines TP, rédige des emails et surveille le marché."}
-"Olá o que fazes?" → {"intent":"general_chat","lang":"pt","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Olá! Sou o Tony, assistente LEGA. Encontro máquinas TP, redijo e-mails e monitorizo o mercado."}
+"Bonjour que peux-tu faire" → {"intent":"general_chat","lang":"fr","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Je peux rechercher des machines TP (pelleteuses, grues, chargeuses), rédiger des emails professionnels, estimer des prix et surveiller le marché. Posez votre question."}
+"Olá o que fazes?" → {"intent":"general_chat","lang":"pt","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Pesquiso máquinas TP, redijo e-mails profissionais, estimo preços e monitorizo o mercado. Qual é a sua questão?"}
+"quel temps fait-il demain ?" → {"intent":"general_chat","lang":"fr","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Je suis spécialisé dans les machines TP. Pour la météo, consultez météo.fr ou weather.com."}
+"what will the weather be tomorrow?" → {"intent":"general_chat","lang":"en","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"I specialize in construction machinery. For weather forecasts, check weather.com or your local service."}
+"tu as accès à internet ?" → {"intent":"general_chat","lang":"fr","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Oui, j'ai accès à SearXNG pour rechercher des annonces de machines TP en temps réel. Donnez-moi vos critères."}
+"tu n'as pas un agent qui se connecte au web" → {"intent":"general_chat","lang":"fr","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Si, j'utilise SearXNG pour trouver des annonces machines en temps réel. Donnez-moi vos critères de recherche."}
+"buenas dias" → {"intent":"general_chat","lang":"es","agent":null,"ack_message":null,"estimated_delay":null,"direct_response":"Buenos días. Busco maquinaria de construcción (excavadoras, grúas, cargadoras), redacto correos y analizo precios. ¿En qué puedo ayudarle?"}
 "Quelle est la fiche technique de la pelleteuse CAT 320?" → {"intent":"documentation_search","lang":"fr","agent":"documentation","ack_message":"Je consulte la documentation technique...","estimated_delay":"30 secondes","direct_response":null}
 "What is the transport weight of a Volvo EC220?" → {"intent":"documentation_search","lang":"en","agent":"documentation","ack_message":"Checking technical documentation...","estimated_delay":"30 seconds","direct_response":null}
 "Change le slogan en français par Votre partenaire machines TP" → {"intent":"modifier_site","lang":"fr","agent":"site_manager","ack_message":"Je modifie le slogan français du site...","estimated_delay":"5 secondes","direct_response":null}
@@ -365,13 +373,16 @@ async def tony_classify(message: str, client_lang: str = None) -> dict:
             "ack_message": ack_by_lang[forced_lang], "estimated_delay": "2-4 min",
             "direct_response": None,
         }
-    fallback_msg = {"pt": "Olá! Sou o Tony, assistente LEGA. Como posso ajudar?",
-                    "en": "Hi! I'm Tony, LEGA assistant. How can I help?",
-                    "fr": "Je suis Tony, votre assistant LEGA. Comment puis-je vous aider ?"}
+    fallback_msg = {
+        "pt": "Pesquiso máquinas TP, redijo e-mails e monitorizo o mercado. Qual é a sua questão?",
+        "en": "I search for construction machinery, write professional emails and monitor the market. What do you need?",
+        "fr": "Je recherche des machines TP, rédige des emails et surveille le marché. Quelle est votre demande ?",
+        "es": "Busco maquinaria TP, redacto correos y monitorizo el mercado. ¿En qué puedo ayudarle?",
+    }
     return {
         "intent": "general_chat", "lang": forced_lang, "agent": None,
         "ack_message": None, "estimated_delay": None,
-        "direct_response": fallback_msg[forced_lang],
+        "direct_response": fallback_msg.get(forced_lang, fallback_msg["fr"]),
     }
 
 
@@ -1484,12 +1495,6 @@ async def websocket_endpoint(ws: WebSocket, token: str = None):
     logger.info(f"WS connected: {session_id} (user {user_id[:8]}, admin={is_admin})")
 
     try:
-        await ws.send_json({
-            "type": "agent_response",
-            "payload": "🚜 Bonjour ! Je suis Tony, votre assistant LEGA. Comment puis-je vous aider ?",
-            "metadata": {"session_id": session_id, "llm": TONY_MODEL, "agent": "tony"},
-        })
-
         while True:
             data = await ws.receive_text()
             payload_raw = json.loads(data)
@@ -1535,11 +1540,13 @@ async def websocket_endpoint(ws: WebSocket, token: str = None):
 
             if intent == "general_chat" or not agent:
                 # Réponse directe de Tony
-                direct = classification.get("direct_response") or (
-                    "Je suis Tony, votre assistant LEGA. Je peux vous aider à rechercher des machines TP, rédiger des emails, analyser des photos, et surveiller le marché."
-                    if lang == "fr" else
-                    "Sou o Tony, o assistente LEGA. Posso ajudá-lo a pesquisar máquinas TP, redigir e-mails e monitorizar o mercado."
-                )
+                _fb = {
+                    "fr": "Je peux rechercher des machines TP, rédiger des emails et surveiller le marché. Quelle est votre demande ?",
+                    "pt": "Pesquiso máquinas TP, redijo e-mails e monitorizo o mercado. Qual é a sua questão?",
+                    "en": "I search for construction machinery, write emails and monitor the market. What do you need?",
+                    "es": "Busco maquinaria TP, redacto correos y monitorizo el mercado. ¿En qué puedo ayudarle?",
+                }
+                direct = classification.get("direct_response") or _fb.get(lang, _fb["fr"])
                 await ws.send_json({
                     "type": "agent_response",
                     "payload": direct,
