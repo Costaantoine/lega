@@ -3,84 +3,71 @@
 
 ---
 
-## 🗓 Dernière mise à jour : 2026-04-17 (~10h30 UTC)
+## 🗓 Dernière mise à jour : 2026-04-18 (~19h30 UTC)
 
 ---
 
-## ✅ FAIT — Session 7 (2026-04-17)
+## ✅ FAIT — Session 8 (2026-04-18)
 
-### 1. Cron scraper tob.pt — commit 440b9d6 (lega-vitrine)
-- **`_scrape_tob_once()`** : fonction partagée cron + endpoint manuel
-- **`tob_scraper_cron()`** : boucle asyncio, lance au démarrage, intervalle configurable `TOB_SCRAPE_INTERVAL_H` (défaut 24h)
-- **`POST /api/site/scraper/run`** : déclenchement immédiat sans attendre le cron
-- **`POST /api/site/import/tob`** : délègue désormais à `_scrape_tob_once` (code dédupliqué)
-- Test au démarrage : 7 nouveaux produits détectés ✅
+### 1. Bug Léa corrigé — commit ebcfa0b (lega-vitrine)
+- **WebSocket**: `onclose`/`onerror` → `setWs(null)` — reconnect auto si socket mort
+- **openChat**: vérifie `ws.readyState === WebSocket.OPEN` avant réutilisation
+- **sendChat**: vérifie readyState, sinon tente reconnexion
+- Test validé : Léa répond < 5s ✅
 
-### 2. TTS streaming Léa — commit 087e7dc (lega/bvi)
-- **`run_standardiste_streaming()`** : streaming gemma4:e2b → phrases → edge-tts, même architecture que vitrine_bot
-- **WS routing** : `preferred_agent=standardiste` → streaming (était plain `agent_response`)
-- **bvi-shop/page.tsx** : gère `text_chunk` sur panel standardiste + `Msg.streaming` dans le type
-- Testé : FR 4 text_chunks + 4 audio_chunks ✅, PT 4 text_chunks + 4 audio_chunks ✅
-- Vitrine port 3002 : envoie `preferred_agent=vitrine_bot` → déjà streaming + TTS ✅
+### 2. Hero image — commit ebcfa0b (lega-vitrine)
+- Remplacé photo générique par grader Unsplash `photo-1747004175907-e64576ba2e22`
+- Grader jaune gros plan, chantier routier, contraste fort ✅
 
-### 3. CMS vitrine — commits 553e28e (lega-vitrine) + 40874b7 (lega/bvi)
-- **Couleurs dynamiques** : `C1`/`C2` lus depuis `cfg[color_primary/color_secondary]` au runtime
-  - Modification couleur dans dashboard → appliquée immédiatement au rechargement vitrine
-- **Dashboard tab Import** : bloc cron actif (badge vert) + bouton "Lancer un scrape maintenant"
+### 3. Tables DB créées dans bvi-db-1
+- `doc_download_requests` : id, doc_path, client_name/email/company, motif, status, download_token, token_expires_at
+- `site_clients` : UUID, email (unique), name, company, password_hash, lang
 
-### 4. NL et ZH sur vitrine — commit 5abd7e2 (lega-vitrine)
-- **LANGS étendu à 10** : +nl (Néerlandais) +zh (Chinois simplifié)
-- 42 clés chacune en DB (vérifiées: `nav_home=Home/首页`)
-- Sélecteur navbar vitrine affiche NL et ZH
+### 4. Agent Léa unifié — commit b456e62 (lega/bvi)
+- `run_lea_streaming()` : canal `web` → gemma2:2b, canal `voice/phone/whatsapp` → gemma4:e2b + TTS
+- WS routing : `preferred_agent=lea` + `canal` param
+- Aliases backward-compat : `vitrine_bot`→lea/web, `standardiste`→lea/voice
+- DB : `standardiste` renommé → `lea`, `vitrine_bot` supprimé
+- Test validé : agent=lea, canal=web, model=gemma2:2b ✅
 
----
+### 5. Backend docs + auth — commit 9d10bf6 (lega-vitrine)
+- `GET /api/site/docs` : arborescence /app/docs
+- `GET /api/site/docs/content?path=` : contenu MD/PDF
+- `POST /api/site/docs/request` : demande DL + Telegram + email client
+- `GET /api/site/docs/requests` + approve/reject + download/{token}
+- `POST /api/site/auth/register|login|verify` : JWT clients vitrine
+- docker-compose : volume /opt/bvi/docs + vars SMTP/Telegram/JWT
 
-## ✅ FAIT — Session 6 (2026-04-17) — commits fbd3275 + 84eb724
-
-### Vitrine port 3002 — commit fbd3275 (lega-vitrine)
-- **Bug Standardiste** : corrigé pour appeler `LEGA_SITE_API/products?status=available` (56 produits)
-- **Logo navbar** : `<img src={cfg["logo_url"]}>` configurable depuis site_config
-- **LEGA Trading → LEGA.PT** : navbar, hero h1 fallback, footer, layout metadata
-- **Message d'accueil** : multilingue sans emojis (8 langues)
-- **Strip emojis** : sur toutes les réponses agent
-
-### Shop port 3001 — commit 84eb724 (lega/bvi)
-- **Tony → Léa** : welcome FR/PT, uploadDesc, analyzeBtn, hint upload, bouton catalogue
-- **Strip emojis** : sur les réponses agent dans le WS handler
-
----
-
-## ✅ FAIT — Session 5 (2026-04-16)
-
-### Sam Comms SMTP — commit 9b5c7b7
-- SMTP configuré : `escritorio.ai.lega@gmail.com` via Gmail app password
-- Test validé depuis le container → email reçu ✅
-
-### Bureau IA — commit c3726f3
-- NL/ZH traductions : 42 clés × 2 langues insérées en DB
-- SiteVitrinePage : LANGS étendu à 9 langues
-- Notif Telegram : testée et confirmée ✅
+### 6. Section Documentation vitrine — commit 07b7ad9 (lega-vitrine)
+- Navbar : onglet Documentation + indicateur session + déconnexion
+- Login modal : login + register inline
+- Section docs : DocTree arborescence + visionneuse MD/PDF
+- Modal demande téléchargement : formulaire pré-rempli + workflow
+- Bannière docs pour visiteurs non connectés
 
 ---
 
 ## 🔄 EN COURS
 
-Rien — tout est commité et poussé.
+Rien — tout est commité.
 
 ---
 
 ## ⏭ PROCHAINES ÉTAPES
 
-### P1 — Bloqué, nécessite action Antoine
-- [ ] **Second VPS** : confirmer existence et IP pour déploiement client
+### P1 — Développement immédiat
+- [ ] **Dashboard admin port 3000** : page "Demandes docs" — liste pending, boutons Approuver/Refuser (appelle `/api/site/docs/requests/{id}/approve|reject`)
+- [ ] **Léa accède au RAG docs** : dans `run_lea_streaming()`, quand canal=web, ajouter recherche RAG `/app/docs` si question technique
+- [ ] **Drapeaux 10 langues** : déjà en place (🇵🇹🇫🇷🇬🇧🇪🇸🇩🇪🇮🇹🇳🇱🇨🇳🇷🇺🇸🇦) ✅
 
-### P2 — Développement immédiat
-- [ ] **site_manager langues** : étendre les actions site_manager pour supporter nl/zh
-- [ ] **Enrichir docs/** : fiches constructeurs (CAT, Volvo, Komatsu), prix marché 2026, réglementation Portugal
-- [ ] **Scraper auto pages multiples** : tob.pt a plusieurs pages — scraper page 2, 3...
+### P2 — Enrichir docs
+- [ ] Fiches PDF constructeurs (CAT, Volvo, Komatsu) dans /opt/bvi/docs/machines/
+- [ ] Prix marché 2026 enrichi
+- [ ] Réglementation transport Portugal
 
 ### P3 — Infra
-- [ ] **Traefik** : traefik-c9es-traefik-1 en restarting → désactiver via Coolify UI
+- [ ] **Second VPS** : confirmer existence et IP (Antoine)
+- [ ] **Traefik** : désactiver traefik-c9es-traefik-1 via Coolify UI
 
 ---
 
@@ -112,16 +99,16 @@ cd /opt/bvi && git push origin main          # lega (Bureau IA)
 # Accès DB
 docker exec bvi-db-1 psql -U bvi_user -d bvi_db
 
-# Logs API
+# Logs
 docker logs bvi-api-1 --tail=30
 docker logs lega-site-lega-backend-1 --tail=30
 
 # IMPORTANT : gemma4:e2b nécessite "think": False dans tous les appels Ollama
-# Sans ça : content="" → tous les agents retournent erreur/vide
 
-# Déclencher scrape tob.pt immédiat
-curl -X POST http://76.13.141.221:8003/api/site/scraper/run
+# Agent Léa — canal web (gemma2:2b) vs voice (gemma4:e2b)
+# preferred_agent: "lea", canal: "web"|"voice"|"phone"|"whatsapp"
 
-# Tester TTS standardiste
-# (voir script test WS dans session 7)
+# Docs API
+curl http://76.13.141.221:8003/api/site/docs
+curl "http://76.13.141.221:8003/api/site/docs/content?path=machines/pelleteuse.md"
 ```
