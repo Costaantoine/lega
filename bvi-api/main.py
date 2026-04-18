@@ -931,6 +931,130 @@ async def run_vitrine_bot_streaming(message: str, lang: str, websocket: "WebSock
         })
 
 
+async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "WebSocket") -> None:
+    """Agent Léa unifié. Canal web → gemma2:2b. Canal voice/phone/whatsapp → gemma4:e2b + TTS."""
+    import base64
+
+    is_voice = canal in ("phone", "whatsapp", "telegram", "voice")
+    model = AGENT_MODEL if is_voice else VITRINE_MODEL
+
+    lang_instr = {
+        "fr": "Réponds en français.",
+        "pt": "Responde em português europeu (PT-PT).",
+        "en": "Reply in English.",
+        "es": "Responde en español.",
+        "de": "Antworte auf Deutsch.",
+        "it": "Rispondi in italiano.",
+        "ru": "Отвечай на русском.",
+        "ar": "أجب باللغة العربية.",
+        "nl": "Antwoord in het Nederlands.",
+        "zh": "用中文回答。",
+    }.get(lang, "Réponds en français.")
+
+    catalogue_ctx = ""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.get(f"{LEGA_SITE_API}/products?status=available&limit=8")
+            if r.status_code == 200:
+                data = r.json()
+                items = data.get("items", data) if isinstance(data, dict) else data
+                lines = [
+                    f"- {p.get('reference','') + ' ' if p.get('reference') else ''}{p['title']} : {p['price']} {p.get('currency','EUR')}"
+                    if p.get("price") else
+                    f"- {p.get('reference','') + ' ' if p.get('reference') else ''}{p['title']} : prix sur demande"
+                    for p in (items or [])[:8]
+                ]
+                if lines:
+                    catalogue_ctx = "\nCATALOGUE:\n" + "\n".join(lines)
+    except Exception:
+        pass
+
+    rules = (
+        "2 à 4 phrases. Ton chaleureux et professionnel. Ne pas inventer de machines ou prix. "
+        "Si demande complexe, mentionner le passage à Tony."
+        if is_voice else
+        "1 à 2 phrases MAXIMUM. Ton calme et professionnel. Zéro emoji. Réponse directe et naturelle."
+    )
+    max_tokens = 300 if is_voice else 250
+
+    prompt = (
+        f"Tu es Léa, assistante multilingue de LEGA.PT, spécialisée en engins de travaux publics d'occasion.\n"
+        f"Langue: {lang_instr}\n"
+        f"{catalogue_ctx}\n"
+        f"RÈGLES: {rules}\n"
+        f"CLIENT: {message}\nLÉA:"
+    )
+
+    full_text = ""
+    buf = ""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=5.0)) as client:
+            async with client.stream(
+                "POST", f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": True, "think": False,
+                    "options": {"temperature": 0.3, "num_predict": max_tokens},
+                },
+            ) as resp:
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        token = json.loads(line).get("message", {}).get("content", "")
+                    except json.JSONDecodeError:
+                        continue
+                    if not token:
+                        continue
+                    buf += token
+                    full_text += token
+                    parts = _SENTENCE_RE.split(buf)
+                    for sentence in parts[:-1]:
+                        sentence = sentence.strip()
+                        if not sentence:
+                            continue
+                        await websocket.send_json({"type": "text_chunk", "payload": sentence + " "})
+                        if TTS_ENABLED:
+                            audio = await text_to_speech_edge(sentence, lang)
+                            if audio:
+                                await websocket.send_json({
+                                    "type": "audio_chunk",
+                                    "payload": base64.b64encode(audio).decode(),
+                                    "lang": lang,
+                                })
+                    buf = parts[-1]
+
+        if buf.strip():
+            await websocket.send_json({"type": "text_chunk", "payload": buf.strip()})
+            if TTS_ENABLED:
+                audio = await text_to_speech_edge(buf.strip(), lang)
+                if audio:
+                    await websocket.send_json({
+                        "type": "audio_chunk",
+                        "payload": base64.b64encode(audio).decode(),
+                        "lang": lang,
+                    })
+
+        await websocket.send_json({
+            "type": "agent_response",
+            "payload": re.sub(r'\s+', ' ', full_text).strip(),
+            "metadata": {"agent": "lea", "canal": canal, "lang": lang, "model": model},
+        })
+    except Exception as e:
+        logger.error(f"lea_streaming error ({canal}): {e}")
+        fb = {
+            "fr": "Je rencontre une difficulté technique. Veuillez réessayer.",
+            "pt": "Encontrei uma dificuldade técnica. Por favor tente novamente.",
+            "en": "I encountered a technical issue. Please try again.",
+        }
+        await websocket.send_json({
+            "type": "agent_response",
+            "payload": fb.get(lang, fb["fr"]),
+            "metadata": {"agent": "lea", "canal": canal, "lang": lang},
+        })
+
+
 async def run_site_manager(payload: dict, lang: str) -> str:
     """
     Agent Site Manager : interprète une commande en langage naturel
@@ -1382,17 +1506,24 @@ async def websocket_endpoint(ws: WebSocket, token: str = None):
             client_lang = payload_raw.get("lang")
             preferred_agent = payload_raw.get("preferred_agent")
 
-            # Routing direct vitrine_bot (streaming + TTS)
-            if preferred_agent == "vitrine_bot":
+            # Routing agent Léa unifié (web → gemma2:2b, voice → gemma4:e2b)
+            if preferred_agent == "lea":
+                canal = payload_raw.get("canal", "web")
                 lang = detect_language(user_msg, client_lang)
-                await run_vitrine_bot_streaming(user_msg, lang, ws)
+                await run_lea_streaming(user_msg, lang, canal, ws)
                 await asyncio.sleep(0.05)
                 continue
 
-            # Routing direct Standardiste — streaming + TTS
+            # Aliases backward-compat
+            if preferred_agent == "vitrine_bot":
+                lang = detect_language(user_msg, client_lang)
+                await run_lea_streaming(user_msg, lang, "web", ws)
+                await asyncio.sleep(0.05)
+                continue
+
             if preferred_agent == "standardiste":
                 lang = detect_language(user_msg, client_lang)
-                await run_standardiste_streaming(user_msg, lang, ws)
+                await run_lea_streaming(user_msg, lang, "voice", ws)
                 await asyncio.sleep(0.05)
                 continue
 
