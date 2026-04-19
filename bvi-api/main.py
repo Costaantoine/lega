@@ -300,17 +300,19 @@ def detect_language(text: str, client_lang: str = None) -> str:
     return "fr"
 
 
-async def tony_classify(message: str, client_lang: str = None) -> dict:
+async def tony_classify(message: str, client_lang: str = None, history: list = None) -> dict:
     """Appelle Tony (gemma4:e2b) pour classifier l'intention."""
     forced_lang = detect_language(message, client_lang)
     lang_hint = {
         "pt": "LANGUAGE=Portuguese (PT-PT). All text fields must be in Portuguese.",
         "en": "LANGUAGE=English. All text fields must be in English.",
         "fr": "LANGUAGE=French. All text fields must be in French.",
-    }[forced_lang]
-    prompt = f"{TONY_SYSTEM}\n\n{lang_hint}\nForce lang=\"{forced_lang}\" in your JSON.\n\nMESSAGE: {message}\n\nJSON:"
+    }.get(forced_lang, "LANGUAGE=French. All text fields must be in French.")
+    history_str = _build_history_str(history or [])
+    no_greet = "\nIMPORTANT: L'utilisateur a déjà été accueilli. Ne jamais recommencer par Bonjour dans direct_response." if history else ""
+    prompt = f"{TONY_SYSTEM}\n\n{lang_hint}\nForce lang=\"{forced_lang}\" in your JSON.{no_greet}\n\n{history_str}MESSAGE: {message}\n\nJSON:"
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(50.0, connect=5.0)) as client:
             res = await client.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
@@ -593,24 +595,27 @@ async def _send_enriched_if_better(ws, message: str, lang: str, quick_text: str,
 
 
 async def handle_general_chat(
-    ws, message: str, lang: str, classification: dict, session_id: str
-) -> None:
+    ws, message: str, lang: str, classification: dict, session_id: str,
+    history: list = None, session_context: dict = None,
+) -> str:
     _fallback = {
         "fr": "Je coordonne 13 agents IA pour les machines TP. Que puis-je faire pour vous ?",
         "pt": "Coordeno 13 agentes IA para máquinas TP. Em que posso ajudar?",
         "en": "I coordinate 13 AI agents for construction machinery. How can I help?",
         "es": "Coordino 13 agentes IA para maquinaria TP. ¿En qué puedo ayudarle?",
     }
-    # Appel unique gemma4:e2b avec contexte complet (même modèle que classify, déjà chaud → +8-12s)
-    # Le système deux-temps (gemma2 quick) n'est pas viable ici car Ollama single-model
-    # impose un swap gemma4→gemma2 de 35-45s après classify, soit plus lent que cette approche.
+    history_str = _build_history_str(history or [])
+    no_greet = "Tu as déjà accueilli l'utilisateur. Ne jamais recommencer par Bonjour ou une formule d'accueil. Va directement au sujet.\n" if history else ""
+    prompt = (
+        f"{no_greet}{history_str}"
+        f"{_TONY_ENRICHED_CHAT.format(message=message, lang=lang)}"
+    )
     try:
-        prompt = _TONY_ENRICHED_CHAT.format(message=message, lang=lang)
         response = await _ollama_quick(AGENT_MODEL, prompt, 200, 40.0)
         if not response:
             response = _fallback.get(lang, _fallback["fr"])
     except Exception as e:
-        logger.warning(f"general_chat enriched failed [{session_id[:8]}]: {type(e).__name__} {e}")
+        logger.warning(f"general_chat failed [{session_id[:8]}]: {type(e).__name__} {e}")
         response = classification.get("direct_response") or _fallback.get(lang, _fallback["fr"])
 
     await ws.send_json({
@@ -618,21 +623,57 @@ async def handle_general_chat(
         "payload": response,
         "metadata": {"intent": "general_chat", "lang": lang, "agent": "tony_interface"},
     })
+    return response
+
+
+_MULTI_ACTION_KW = {"les deux", "fais les deux", "à la suite", "os dois", "ambos",
+                    "et aussi", "et également", "ensuite", "puis ensuite"}
 
 
 async def tony_dispatch(
     user_msg: str, client_lang: str,
     ws: "WebSocket", session_id: str, user_id: str, is_admin: bool,
+    conversation_history: list = None, session_context: dict = None,
 ) -> None:
     """Classifie + dispatche vers l'agent — exécuté en arrière-plan via create_task."""
+    conv_hist = conversation_history if conversation_history is not None else []
+    ctx = session_context if session_context is not None else {}
+
     try:
-        classification = await tony_classify(user_msg, client_lang)
+        # Détecter multi-action trigger
+        msg_low = user_msg.lower()
+        is_multi_trigger = any(kw in msg_low for kw in _MULTI_ACTION_KW)
+        if is_multi_trigger and ctx.get("pending_actions"):
+            pending = ctx.pop("pending_actions")
+            lang = ctx.get("user_lang", "fr")
+            info = {"fr": f"Je lance les actions en attente : {', '.join(pending)}.",
+                    "pt": f"A executar as ações pendentes: {', '.join(pending)}.",
+                    "en": f"Launching pending actions: {', '.join(pending)}."}
+            await ws.send_json({"type": "agent_response",
+                "payload": info.get(lang, info["fr"]),
+                "metadata": {"intent": "multi_action", "lang": lang, "agent": "tony_interface"}})
+            for pa in pending:
+                ctx["pending_actions"] = []
+                await tony_dispatch(user_msg, client_lang, ws, session_id, user_id,
+                                    is_admin, conv_hist, {**ctx, "forced_agent": pa})
+            return
+
+        classification = await tony_classify(user_msg, client_lang, history=conv_hist)
         intent = classification.get("intent", "general_chat")
         lang   = classification.get("lang", "fr")
         agent  = classification.get("agent")
+        ctx["last_intent"] = intent
+        ctx["last_agent"] = agent
+        ctx["user_lang"] = lang
 
         if intent == "general_chat" or not agent:
-            await handle_general_chat(ws, user_msg, lang, classification, session_id)
+            response_text = await handle_general_chat(
+                ws, user_msg, lang, classification, session_id,
+                history=conv_hist, session_context=ctx,
+            )
+            if conv_hist is not None:
+                conv_hist.append({"role": "assistant", "content": response_text or ""})
+                asyncio.create_task(_save_conv_history(user_id, user_msg, response_text or "", lang))
             return
 
         latency_map = {"max_search": 180, "sam_comms": 90, "visa_vision": 10, "documentation": 30, "site_manager": 15}
@@ -1738,6 +1779,48 @@ async def db_connect():
     return await asyncpg.connect(DB_URL)
 
 
+# ── Conversation memory helpers ───────────────────────────────────────────────
+
+def _build_history_str(history: list, max_turns: int = 3) -> str:
+    if not history:
+        return ""
+    lines = []
+    for h in history[-(max_turns * 2):]:
+        role = "Utilisateur" if h["role"] == "user" else "Tony"
+        lines.append(f"{role} : {h['content'][:120]}")
+    return "HISTORIQUE (derniers échanges) :\n" + "\n".join(lines) + "\n\n"
+
+
+async def _load_conv_history(user_id: str) -> list:
+    try:
+        conn = await db_connect()
+        rows = await conn.fetch(
+            "SELECT role, content FROM conversation_history WHERE user_id=$1 ORDER BY created_at DESC LIMIT 10",
+            user_id,
+        )
+        await conn.close()
+        return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+    except Exception as e:
+        logger.warning(f"load_conv_history failed: {e}")
+        return []
+
+
+async def _save_conv_history(user_id: str, user_msg: str, assistant_msg: str, lang: str) -> None:
+    try:
+        conn = await db_connect()
+        await conn.execute(
+            "INSERT INTO conversation_history (user_id, role, content, language) VALUES ($1,$2,$3,$4)",
+            user_id, "user", user_msg[:1000], lang,
+        )
+        await conn.execute(
+            "INSERT INTO conversation_history (user_id, role, content, language) VALUES ($1,$2,$3,$4)",
+            user_id, "assistant", assistant_msg[:1000], lang,
+        )
+        await conn.close()
+    except Exception as e:
+        logger.debug(f"save_conv_history failed: {e}")
+
+
 async def create_task(session_id: str, agent_name: str, payload: dict, lang: str, estimated_latency: int) -> str:
     task_id = str(uuid.uuid4())
     conn = await db_connect()
@@ -2023,6 +2106,25 @@ async def startup():
     asyncio.create_task(task_worker())
     asyncio.create_task(trial_expiry_cron())
     asyncio.create_task(morning_brief_cron())
+    try:
+        conn = await db_connect()
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_history (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                language TEXT DEFAULT 'fr',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conv_hist_user ON conversation_history(user_id, created_at DESC)"
+        )
+        await conn.close()
+        logger.info("conversation_history table ready")
+    except Exception as e:
+        logger.warning(f"conversation_history table init failed: {e}")
     logger.info("LEGA API v1.0 started — Tony + Worker + Trial cron + Morning brief + RAG online")
 
 
@@ -2055,6 +2157,15 @@ async def websocket_endpoint(ws: WebSocket, token: str = None):
             pass
 
     logger.info(f"WS connected: {session_id} (user {user_id[:8]}, admin={is_admin})")
+
+    # Mémoire conversationnelle — chargée depuis DB, enrichie en mémoire pendant la session
+    conversation_history: list = await _load_conv_history(user_id)
+    session_context: dict = {
+        "pending_actions": [],
+        "last_agent": None,
+        "last_intent": None,
+        "user_lang": "fr",
+    }
 
     # Envoyer message d'accueil Tony à la connexion
     _tony_welcome = {
@@ -2132,6 +2243,11 @@ async def websocket_endpoint(ws: WebSocket, token: str = None):
                 await asyncio.sleep(0.05)
                 continue
 
+            # Ajouter message user à l'historique local
+            conversation_history.append({"role": "user", "content": user_msg})
+            if len(conversation_history) > 20:
+                conversation_history[:] = conversation_history[-20:]
+
             # Étape 1 — Accusé réception instantané (keyword, zéro LLM)
             quick_ack = tony_quick_ack(user_msg, client_lang)
             await ws.send_json({
@@ -2142,7 +2258,8 @@ async def websocket_endpoint(ws: WebSocket, token: str = None):
 
             # Étape 2 — Classification + dispatch en arrière-plan
             asyncio.create_task(
-                tony_dispatch(user_msg, client_lang, ws, session_id, user_id, is_admin)
+                tony_dispatch(user_msg, client_lang, ws, session_id, user_id, is_admin,
+                              conversation_history, session_context)
             )
 
             await asyncio.sleep(0.1)
