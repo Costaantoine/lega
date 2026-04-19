@@ -42,7 +42,7 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 # Agents nécessitant un abonnement
-PREMIUM_AGENTS = {"max_search", "lea_extract", "visa_vision"}
+PREMIUM_AGENTS = {"max_search", "lea_extract", "visa_vision", "logistique", "comptable", "traducteur", "demandes_prix"}
 
 # Mode gestion site : "agent" (automatique) ou "manual" (dashboard)
 SITE_MANAGEMENT_MODE = os.getenv("SITE_MANAGEMENT_MODE", "manual")
@@ -97,6 +97,9 @@ TTS_VOICES: dict[str, str] = {
     "ar": "ar-SA-ZariyahNeural",
     "ru": "ru-RU-SvetlanaNeural",
 }
+
+# Brouillons Sam en attente de confirmation (en mémoire, TTL ~30min via cron)
+sam_pending: dict[str, dict] = {}
 
 app = FastAPI(title="LEGA/BVI API", version="1.0.0")
 app.mount("/uploads", StaticFiles(directory="/app/uploads"), name="uploads")
@@ -153,14 +156,18 @@ Detect language from these signals:
 - French words (pelleteuse, trouve, cherche, bonjour, devis, quel, temps, demain) → lang=fr
 
 JSON format:
-{"intent":"machine_search|email_followup|image_analysis|documentation_search|modifier_site|watch_request|general_chat","lang":"fr|pt|en|es","agent":"max_search|sam_comms|visa_vision|documentation|site_manager|null","ack_message":"short ack IN DETECTED LANGUAGE or null","estimated_delay":"string or null","direct_response":"full reply IN DETECTED LANGUAGE if general_chat, else null"}
+{"intent":"machine_search|email_followup|image_analysis|documentation_search|modifier_site|watch_request|logistique|comptable|traducteur|demandes_prix|general_chat","lang":"fr|pt|en|es","agent":"max_search|sam_comms|visa_vision|documentation|site_manager|logistique|comptable|traducteur|demandes_prix|null","ack_message":"short ack IN DETECTED LANGUAGE or null","estimated_delay":"string or null","direct_response":"full reply IN DETECTED LANGUAGE if general_chat, else null"}
 
 Rules:
-- machine_search (pelleteuse/escavadora/excavator/grue/tracteur) → agent=max_search
+- machine_search (pelleteuse/escavadora/excavator/excavatrice/excavadora/grue/tracteur/bulldozer/dumper/tombereau/nacelle/chariot/elevateur/compacteur/niveleuse) → agent=max_search
 - email_followup (email/devis/relancer/contactar) → agent=sam_comms
 - image_analysis (photo/image/analyser) → agent=visa_vision
 - documentation_search (fiche technique/ficha técnica/technical spec/certificat CE/douane/customs/transport/poids/dimensions/prix marché/documentation) → agent=documentation
-- modifier_site (changer slogan/couleur/téléphone/adresse/logo/section/modifier le site/atualizar site) → agent=site_manager
+- modifier_site (changer slogan/couleur/téléphone/adresse/logo/section/modifier le site/atualizar site/ajouter produit/modifier produit) → agent=site_manager
+- logistique (transport/logistique/livraison/devis transport/fret/bateau/camion plateau/grue chargement) → agent=logistique
+- comptable (devis/facture/bon de commande/comptabilité/paiement/TVA/avoir/relance paiement) → agent=comptable
+- traducteur (traduis/traduire/translation/tradução/en portugais/en français/en anglais) → agent=traducteur
+- demandes_prix (demande de prix/prix fournisseur/tarif transporteur/combien coûte/quel prix/prix grue) → agent=demandes_prix
 - general_chat → agent=null, direct_response MUST be a helpful answer IN DETECTED LANGUAGE
 - NEVER use direct_response to repeat a greeting or introduction — give a real answer
 - For off-topic questions (météo, etc.): redirect politely and suggest an alternative
@@ -180,7 +187,11 @@ Examples:
 "Quelle est la fiche technique de la pelleteuse CAT 320?" → {"intent":"documentation_search","lang":"fr","agent":"documentation","ack_message":"Je consulte la documentation technique...","estimated_delay":"30 secondes","direct_response":null}
 "What is the transport weight of a Volvo EC220?" → {"intent":"documentation_search","lang":"en","agent":"documentation","ack_message":"Checking technical documentation...","estimated_delay":"30 seconds","direct_response":null}
 "Change le slogan en français par Votre partenaire machines TP" → {"intent":"modifier_site","lang":"fr","agent":"site_manager","ack_message":"Je modifie le slogan français du site...","estimated_delay":"5 secondes","direct_response":null}
-"Mets le téléphone à +351 912 000 000" → {"intent":"modifier_site","lang":"fr","agent":"site_manager","ack_message":"Je mets à jour le numéro de téléphone...","estimated_delay":"5 secondes","direct_response":null}"""
+"Mets le téléphone à +351 912 000 000" → {"intent":"modifier_site","lang":"fr","agent":"site_manager","ack_message":"Je mets à jour le numéro de téléphone...","estimated_delay":"5 secondes","direct_response":null}
+"Combien coûte le transport d'une pelleteuse de Lyon à Porto ?" → {"intent":"logistique","lang":"fr","agent":"logistique","ack_message":"Je calcule le coût de transport...","estimated_delay":"15 secondes","direct_response":null}
+"Génère un devis pour la vente d'un CAT 320 à 45000€" → {"intent":"comptable","lang":"fr","agent":"comptable","ack_message":"Je génère le devis...","estimated_delay":"20 secondes","direct_response":null}
+"Traduis cette fiche technique en portugais" → {"intent":"traducteur","lang":"fr","agent":"traducteur","ack_message":"Je traduis le document...","estimated_delay":"20 secondes","direct_response":null}
+"Rédige une demande de prix à un fournisseur pour une excavatrice 20T" → {"intent":"demandes_prix","lang":"fr","agent":"demandes_prix","ack_message":"Je rédige la demande de prix...","estimated_delay":"15 secondes","direct_response":null}"""
 
 
 async def notify_telegram(text: str) -> None:
@@ -290,7 +301,7 @@ def detect_language(text: str, client_lang: str = None) -> str:
 
 
 async def tony_classify(message: str, client_lang: str = None) -> dict:
-    """Appelle Tony (gemma2:2b) pour classifier l'intention."""
+    """Appelle Tony (gemma4:e2b) pour classifier l'intention."""
     forced_lang = detect_language(message, client_lang)
     lang_hint = {
         "pt": "LANGUAGE=Portuguese (PT-PT). All text fields must be in Portuguese.",
@@ -303,10 +314,10 @@ async def tony_classify(message: str, client_lang: str = None) -> dict:
             res = await client.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
-                    "model": TONY_MODEL,
+                    "model": AGENT_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False, "think": False,
-                    "options": {"temperature": 0.1, "num_predict": 400},
+                    "options": {"temperature": 0.1, "num_predict": 256},
                 },
             )
             raw = res.json().get("message", {}).get("content", "")
@@ -316,9 +327,53 @@ async def tony_classify(message: str, client_lang: str = None) -> dict:
                 result = json.loads(raw[start:end])
                 # Toujours forcer la langue pré-détectée (Tony peut se tromper)
                 result["lang"] = forced_lang
+                m_low = message.lower()
+                # Overrides prioritaires — agents spécialisés (avant machine_kw)
+                _logistique_kw = {"coût transport","combien transport","transport de","transport d",
+                                  "livraison de","devis transport","fret","camion plateau","ro-ro",
+                                  "bateau ro","acheminer","expédier","convoi","logistique","shipping cost",
+                                  "custo transporte","transporte de","enviar máquina"}
+                _comptable_kw  = {"génère un devis","générer un devis","faire un devis","créer un devis",
+                                  "facture","bon de commande","tva","avoir","relance paiement",
+                                  "facturation","invoice","orçamento","fatura","nota fiscal"}
+                _demandes_kw   = {"demande de prix","prix fournisseur","tarif fournisseur",
+                                  "prix transporteur","pedido de preço","price request",
+                                  "precio proveedor","rédige une demande"}
+                _traducteur_kw = {"traduis","traduire","traduza","tradução","translation",
+                                  "translate","traducir","en portugais","en français","en anglais",
+                                  "in portuguese","in french","in english","em português","em francês"}
+                if any(w in m_low for w in _logistique_kw):
+                    result.update({"intent":"logistique","agent":"logistique","direct_response":None,
+                        "estimated_delay":"15s",
+                        "ack_message": result.get("ack_message") or {"fr":"Je calcule le transport...","pt":"A calcular o transporte...","en":"Calculating transport..."}.get(forced_lang,"Je calcule...")})
+                elif any(w in m_low for w in _comptable_kw):
+                    result.update({"intent":"comptable","agent":"comptable","direct_response":None,
+                        "estimated_delay":"20s",
+                        "ack_message": result.get("ack_message") or {"fr":"Je génère le document...","pt":"A gerar o documento...","en":"Generating document..."}.get(forced_lang,"Je génère...")})
+                elif any(w in m_low for w in _demandes_kw):
+                    result.update({"intent":"demandes_prix","agent":"demandes_prix","direct_response":None,
+                        "estimated_delay":"15s",
+                        "ack_message": result.get("ack_message") or {"fr":"Je rédige la demande de prix...","pt":"A redigir o pedido de preço...","en":"Writing price request..."}.get(forced_lang,"Je rédige...")})
+                elif any(w in m_low for w in _traducteur_kw):
+                    result.update({"intent":"traducteur","agent":"traducteur","direct_response":None,
+                        "estimated_delay":"20s",
+                        "ack_message": result.get("ack_message") or {"fr":"Je traduis le texte...","pt":"A traduzir o texto...","en":"Translating..."}.get(forced_lang,"Je traduis...")})
+                # Override site_manager (avant machine_kw)
+                _site_kw = {"ajoute produit","ajouter produit","ajoute une annonce","ajouter annonce",
+                            "crée une fiche","créer fiche","nouveau produit","ajouter au catalogue",
+                            "modifie le statut","modifier le statut","passe le produit","mettre en vente",
+                            "modifie le site","modifier le site","change le slogan","changer slogan",
+                            "configure le site","configurer le site","gestion du site","gérer le site",
+                            "adicionar produto","atualizar site","mudar slogan","novo produto"}
+                if any(w in m_low for w in _site_kw):
+                    result.update({"intent":"modifier_site","agent":"site_manager","direct_response":None,
+                        "estimated_delay":"10s",
+                        "ack_message": result.get("ack_message") or {"fr":"Je modifie le site vitrine...","pt":"A modificar o site...","en":"Updating the site..."}.get(forced_lang,"Je modifie...")})
                 # Forcer machine_search si mots-clés machines présents et Tony a raté
-                machine_kw = {"escavadora","pelleteuse","excavator","grue","crane",
-                              "tracteur","tractor","chargeuse","loader","pelle"}
+                machine_kw = {"escavadora","excavadora","pelleteuse","excavatrice","excavator","grue","crane",
+                              "tracteur","tractor","chargeuse","loader","pelle","engin","engins",
+                              "machine tp","machines tp","bulldozer","compacteur","tombereau","nacelle",
+                              "chariot élévateur","chargeur","niveleuse","compacteur"}
                 if result.get("intent") == "general_chat" and any(w in message.lower() for w in machine_kw):
                     ack_by_lang = {
                         "pt": f"A pesquisar...", "en": "Searching...", "fr": "Je recherche..."
@@ -363,10 +418,52 @@ async def tony_classify(message: str, client_lang: str = None) -> dict:
                 return result
     except Exception as e:
         logger.warning(f"Tony classify error: {e}")
-    # Fallback — vérifier si machine_search par mots-clés même sans JSON Tony
-    machine_kw = {"escavadora","pelleteuse","excavator","grue","crane",
-                  "tracteur","tractor","chargeuse","loader","pelle"}
-    if any(w in message.lower() for w in machine_kw):
+    # Fallback — agents spécialisés prioritaires, puis machine_search
+    m_low = message.lower()
+    _logistique_kw = {"coût transport","combien transport","transport de","transport d",
+                      "livraison de","devis transport","fret","camion plateau","ro-ro",
+                      "bateau ro","acheminer","expédier","convoi","logistique","shipping cost",
+                      "custo transporte","transporte de","enviar máquina"}
+    _comptable_kw  = {"génère un devis","générer un devis","faire un devis","créer un devis",
+                      "facture","bon de commande","tva","avoir","relance paiement",
+                      "facturation","invoice","orçamento","fatura","nota fiscal"}
+    _demandes_kw   = {"demande de prix","prix fournisseur","tarif fournisseur",
+                      "prix transporteur","pedido de preço","price request",
+                      "precio proveedor","rédige une demande"}
+    if any(w in m_low for w in _logistique_kw):
+        return {"intent":"logistique","lang":forced_lang,"agent":"logistique",
+                "ack_message":{"fr":"Je calcule le transport...","pt":"A calcular o transporte...","en":"Calculating transport..."}.get(forced_lang,"Je calcule..."),
+                "estimated_delay":"15s","direct_response":None}
+    if any(w in m_low for w in _comptable_kw):
+        return {"intent":"comptable","lang":forced_lang,"agent":"comptable",
+                "ack_message":{"fr":"Je génère le document...","pt":"A gerar o documento...","en":"Generating document..."}.get(forced_lang,"Je génère..."),
+                "estimated_delay":"20s","direct_response":None}
+    if any(w in m_low for w in _demandes_kw):
+        return {"intent":"demandes_prix","lang":forced_lang,"agent":"demandes_prix",
+                "ack_message":{"fr":"Je rédige la demande de prix...","pt":"A redigir o pedido de preço...","en":"Writing price request..."}.get(forced_lang,"Je rédige..."),
+                "estimated_delay":"15s","direct_response":None}
+    _traducteur_kw = {"traduis","traduire","traduza","tradução","translation","translate","traducir",
+                      "en portugais","en français","en anglais","in portuguese","in french","in english",
+                      "em português","em francês"}
+    if any(w in m_low for w in _traducteur_kw):
+        return {"intent":"traducteur","lang":forced_lang,"agent":"traducteur",
+                "ack_message":{"fr":"Je traduis le texte...","pt":"A traduzir o texto...","en":"Translating..."}.get(forced_lang,"Je traduis..."),
+                "estimated_delay":"20s","direct_response":None}
+    _site_kw = {"ajoute produit","ajouter produit","ajoute une annonce","ajouter annonce",
+                "crée une fiche","créer fiche","nouveau produit","ajouter au catalogue",
+                "modifie le statut","modifier le statut","passe le produit","mettre en vente",
+                "modifie le site","modifier le site","change le slogan","changer slogan",
+                "configure le site","configurer le site","gestion du site","gérer le site",
+                "adicionar produto","atualizar site","mudar slogan","novo produto"}
+    if any(w in m_low for w in _site_kw):
+        return {"intent":"modifier_site","lang":forced_lang,"agent":"site_manager",
+                "ack_message":{"fr":"Je modifie le site vitrine...","pt":"A modificar o site...","en":"Updating the site..."}.get(forced_lang,"Je modifie..."),
+                "estimated_delay":"10s","direct_response":None}
+    machine_kw = {"escavadora","excavadora","pelleteuse","excavatrice","excavator","grue","crane",
+                  "tracteur","tractor","chargeuse","loader","pelle","engin","engins",
+                  "machine tp","machines tp","bulldozer","compacteur","tombereau","nacelle",
+                  "chariot élévateur","chargeur","niveleuse"}
+    if any(w in m_low for w in machine_kw):
         ack_by_lang = {"pt": "A pesquisar...", "en": "Searching...", "fr": "Je recherche..."}
         return {
             "intent": "machine_search", "lang": forced_lang, "agent": "max_search",
@@ -384,6 +481,188 @@ async def tony_classify(message: str, client_lang: str = None) -> dict:
         "ack_message": None, "estimated_delay": None,
         "direct_response": fallback_msg.get(forced_lang, fallback_msg["fr"]),
     }
+
+
+def tony_quick_ack(message: str, client_lang: str = None) -> str:
+    """Retourne un ack instantané basé sur keywords — zéro LLM."""
+    lang = detect_language(message, client_lang)
+    m = message.lower()
+
+    machine_kw  = {"prix","price","preço","excavatrice","excavator","escavadora","pelleteuse",
+                   "chariot","forklift","empilhador","grue","crane","grua","tracteur","tractor",
+                   "bulldozer","compacteur","compactor","chargeuse","loader","tombereau","dumper",
+                   "cat ","volvo","doosan","komatsu","liebherr","occasion","used","usado"}
+    transport_kw = {"transport","transporter","livrer","livraison","devis","porto","lyon","madrid",
+                    "fret","logistic","logistique","convoi","acheminer","deliver","expédier"}
+    site_kw      = {"ajoute","ajout","créer produit","modifie","modifier","prix du","statut",
+                    "slogan","couleur","logo","adresse","téléphone","site vitrine","site web",
+                    "update site","atualizar","adicionar","produto"}
+    email_kw     = {"email","mail","courriel","envoie","envoyer","send","enviar","cliente",
+                    "client","ferreira","silva","santos","prêt","ready","pronto"}
+    docs_kw      = {"manuel","manual","fiche","spec","documentation","certif","douane",
+                    "homolog","datasheet","técnica"}
+
+    if any(w in m for w in machine_kw):
+        return {"fr":"Je consulte le marché pour vous...",
+                "pt":"A consultar o mercado para si...",
+                "en":"Searching the market for you..."}.get(lang,"Je consulte le marché...")
+    if any(w in m for w in transport_kw):
+        return {"fr":"Je prépare votre devis logistique...",
+                "pt":"A preparar o seu orçamento logístico...",
+                "en":"Preparing your logistics quote..."}.get(lang,"Je prépare votre devis logistique...")
+    if any(w in m for w in site_kw):
+        return {"fr":"Je prépare la modification du site...",
+                "pt":"A preparar a modificação do site...",
+                "en":"Preparing the site update..."}.get(lang,"Je prépare la modification du site...")
+    if any(w in m for w in email_kw):
+        return {"fr":"Je prépare votre communication...",
+                "pt":"A preparar a sua comunicação...",
+                "en":"Preparing your communication..."}.get(lang,"Je prépare votre communication...")
+    if any(w in m for w in docs_kw):
+        return {"fr":"Je consulte la documentation technique...",
+                "pt":"A consultar a documentação técnica...",
+                "en":"Checking technical documentation..."}.get(lang,"Je consulte la documentation...")
+    return {"fr":"Je traite votre demande...",
+            "pt":"A tratar do seu pedido...",
+            "en":"Processing your request..."}.get(lang,"Je traite votre demande...")
+
+
+async def tony_dispatch(
+    user_msg: str, client_lang: str,
+    ws: "WebSocket", session_id: str, user_id: str, is_admin: bool,
+) -> None:
+    """Classifie + dispatche vers l'agent — exécuté en arrière-plan via create_task."""
+    try:
+        classification = await tony_classify(user_msg, client_lang)
+        intent = classification.get("intent", "general_chat")
+        lang   = classification.get("lang", "fr")
+        agent  = classification.get("agent")
+
+        if intent == "general_chat" or not agent:
+            _fb = {
+                "fr": "Je peux rechercher des machines TP, rédiger des emails et surveiller le marché. Quelle est votre demande ?",
+                "pt": "Pesquiso máquinas TP, redijo e-mails e monitorizo o mercado. Qual é a sua questão?",
+                "en": "I search for construction machinery, write emails and monitor the market. What do you need?",
+                "es": "Busco maquinaria TP, redacto correos y monitorizo el mercado. ¿En qué puedo ayudarle?",
+            }
+            direct = classification.get("direct_response") or _fb.get(lang, _fb["fr"])
+            await ws.send_json({
+                "type": "agent_response",
+                "payload": direct,
+                "metadata": {"intent": intent, "lang": lang, "llm": AGENT_MODEL},
+            })
+            return
+
+        latency_map = {"max_search": 180, "sam_comms": 90, "visa_vision": 10, "documentation": 30, "site_manager": 15}
+        estimated   = latency_map.get(agent, 120)
+
+        if agent == "site_manager" and not is_admin:
+            block_msg = {
+                "fr": "🔒 Cette action nécessite les droits administrateur.\nContactez Antoine pour activer la gestion du site.",
+                "pt": "🔒 Esta ação requer direitos de administrador.\nContacte Antoine para ativar a gestão do site.",
+                "en": "🔒 This action requires administrator rights.\nContact Antoine to activate site management.",
+            }
+            await ws.send_json({
+                "type": "agent_response",
+                "payload": block_msg.get(lang, block_msg["fr"]),
+                "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "blocked"},
+            })
+            return
+
+        if agent in PREMIUM_AGENTS:
+            sub_status = await check_subscription(user_id, agent)
+            if sub_status not in ("active", "trial"):
+                is_renewal = sub_status == "expired"
+                await activate_trial(user_id, agent)
+                logger.info(f"Trial activé: user {user_id[:8]} → {agent}")
+                if lang == "pt":
+                    upsell = (
+                        f"🎯 O agente <b>{agent}</b> é premium.\n\n"
+                        f"✅ Ativei um <b>trial gratuito de 24h</b> para si!\n"
+                        f"A processar o seu pedido agora...\n\n"
+                        f"💡 Para acesso permanente: <b>49€/mês</b>. Contacte-nos."
+                    ) if not is_renewal else (
+                        f"🔄 O seu trial anterior expirou.\n"
+                        f"✅ Novo trial de 24h ativado! A processar...\n\n"
+                        f"💡 Acesso permanente: <b>49€/mês</b>."
+                    )
+                elif lang == "en":
+                    upsell = (
+                        f"🎯 The <b>{agent}</b> agent is premium.\n\n"
+                        f"✅ I've activated a <b>free 24h trial</b> for you!\n"
+                        f"Processing your request now...\n\n"
+                        f"💡 Full access: <b>€49/month</b>. Contact us."
+                    ) if not is_renewal else (
+                        f"🔄 Your previous trial has expired.\n"
+                        f"✅ New 24h trial activated! Processing...\n\n"
+                        f"💡 Full access: <b>€49/month</b>."
+                    )
+                else:
+                    upsell = (
+                        f"🎯 L'agent <b>{agent}</b> est premium.\n\n"
+                        f"✅ J'active un <b>trial gratuit 24h</b> pour vous !\n"
+                        f"Je traite votre demande maintenant...\n\n"
+                        f"💡 Accès permanent : <b>49€/mois</b>. Contactez-nous."
+                    ) if not is_renewal else (
+                        f"🔄 Votre trial précédent a expiré.\n"
+                        f"✅ Nouveau trial 24h activé ! Je traite votre demande...\n\n"
+                        f"💡 Accès permanent : <b>49€/mois</b>."
+                    )
+                await ws.send_json({
+                    "type": "agent_response",
+                    "payload": upsell,
+                    "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "trial_activated"},
+                })
+                tg_msg = (
+                    f"🆕 <b>Trial activé</b>\n"
+                    f"Agent : <code>{agent}</code>\n"
+                    f"Session : <code>{session_id[:12]}</code>\n"
+                    f"Message : {user_msg[:200]}\n"
+                    f"Langue : {lang}\n"
+                    f"Renouvellement : {'oui' if is_renewal else 'non'}"
+                )
+                asyncio.create_task(notify_telegram(tg_msg))
+                try:
+                    conn_act = await db_connect()
+                    await conn_act.execute(
+                        """INSERT INTO activation_requests (session_id, agent_name, user_message, status)
+                           VALUES ($1, $2, $3, 'approved')""",
+                        session_id, agent, user_msg[:500],
+                    )
+                    await conn_act.close()
+                except Exception as e:
+                    logger.warning(f"activation_requests insert failed: {e}")
+
+        ack = classification.get("ack_message") or (
+            f"✅ Je délègue à {agent}... Résultat dans {classification.get('estimated_delay','quelques minutes')}."
+            if lang != "pt" else
+            f"✅ A delegar para {agent}... Resultado em {classification.get('estimated_delay','alguns minutos')}."
+        )
+        await ws.send_json({
+            "type": "agent_response",
+            "payload": ack,
+            "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "delegated"},
+        })
+
+        task_id = await create_task(
+            session_id=session_id,
+            agent_name=agent,
+            payload={"message": user_msg, "lang": lang},
+            lang=lang,
+            estimated_latency=estimated,
+        )
+        logger.info(f"Task created: {task_id} → {agent}")
+
+    except Exception as e:
+        logger.error(f"tony_dispatch error [{session_id[:8]}]: {e}")
+        try:
+            await ws.send_json({
+                "type": "agent_response",
+                "payload": "Une erreur est survenue. Veuillez réessayer.",
+                "metadata": {"error": str(e)[:100]},
+            })
+        except Exception:
+            pass
 
 
 # ── Agents ───────────────────────────────────────────────────────────────────
@@ -511,23 +790,17 @@ ACTIONS: <suivi suggéré, relance, délai>"""
         if len(parts) >= 2:
             body = parts[1].strip()
 
-        # Envoi si destinataire trouvé et SMTP configuré
-        send_status = ""
-        if to_addr and SMTP_FROM and SMTP_PASSWORD:
-            try:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, _smtp_send, to_addr, subject, body)
-                send_status = f"\n\n✅ Email envoyé à {to_addr} depuis {SMTP_FROM}"
-                logger.info(f"sam_comms: email envoyé à {to_addr}, sujet: {subject}")
-            except Exception as e:
-                send_status = f"\n\n⚠️ Envoi échoué ({str(e)[:80]})"
-                logger.error(f"sam_comms SMTP error: {e}")
-        elif to_addr and not SMTP_PASSWORD:
-            send_status = "\n\n⚠️ SMTP non configuré — email non envoyé (mode brouillon)"
+        # Gate de confirmation — toujours retourner un brouillon, ne jamais envoyer automatiquement
+        if to_addr:
+            draft_id = str(uuid.uuid4())
+            sam_pending[draft_id] = {
+                "to_addr": to_addr, "subject": subject, "body": body,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            confirm_note = f"\n\n📧 **Destinataire détecté : {to_addr}**\nCliquez sur **Confirmer l'envoi** pour envoyer cet email."
+            return content + confirm_note + f"\n___DRAFT_ID:{draft_id}___"
         else:
-            send_status = "\n\n📋 Aucune adresse détectée — brouillon généré (ajoutez un destinataire pour envoyer)"
-
-        return content + send_status
+            return content + "\n\n📋 Aucune adresse détectée — brouillon généré (ajoutez un destinataire pour envoyer)"
 
     except Exception as e:
         return f"⚠️ Erreur Sam Comms: {str(e)[:100]}"
@@ -624,8 +897,149 @@ Si l'information n'est pas dans la documentation, dis-le clairement."""
         return f"⚠️ Erreur agent Documentation: {str(e)[:100]}"
 
 
+async def run_logistique(payload: dict, lang: str) -> str:
+    """Agent Logistique: calcul transport engins TP France↔Portugal."""
+    query = payload.get("message", "")
+    lang_instr = {"fr": "Français.", "pt": "Português europeu (PT-PT).", "en": "English."}.get(lang, "Français.")
+    prompt = f"""Tu es l'Agent Logistique de LEGA.
+Tu calcules les coûts de transport d'engins TP entre France et Portugal.
+Données disponibles : transport routier (camion plateau), bateau (Ro-Ro Setúbal↔Le Havre), grue de chargement.
+Tarifs approximatifs :
+- Transport routier France↔Portugal : 800-1500€ selon distance/tonnage
+- Bateau Ro-Ro : 400-700€ + port fees ~150€
+- Grue chargement/déchargement : 200-500€
+Pour chaque demande, donne : mode recommandé, coût estimé, délai, remarques douane si nécessaire.
+Si tu manques d'info (poids, dimensions), demande-les clairement.
+Langue: {lang_instr}
+
+DEMANDE: {query}
+RÉPONSE:"""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+            res = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": AGENT_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False, "think": False,
+                    "options": {"temperature": 0.2, "num_predict": 500},
+                },
+            )
+            return res.json().get("message", {}).get("content", "Résultat indisponible.").strip()
+    except Exception as e:
+        logger.error(f"Logistique agent error: {e}")
+        return f"⚠️ Erreur agent Logistique: {str(e)[:100]}"
+
+
+async def run_comptable(payload: dict, lang: str) -> str:
+    """Agent Comptable: devis et factures professionnels."""
+    query = payload.get("message", "")
+    lang_instr = {"fr": "Français.", "pt": "Português europeu (PT-PT).", "en": "English."}.get(lang, "Français.")
+    prompt = f"""Tu es le Secrétaire Comptable de LEGA.
+Tu génères des devis et factures professionnels pour la vente d'engins TP d'occasion entre France et Portugal.
+Format devis : référence DEVIS-AAAA-NNN, date, coordonnées LEGA, coordonnées client, description machine (marque/modèle/année/heures), prix HT, TVA applicable (20% France / 23% Portugal), prix TTC, conditions de paiement, validité 30 jours.
+Génère toujours un document structuré et professionnel.
+Ne jamais inventer de prix — utilise uniquement les données fournies.
+Langue: {lang_instr}
+
+DEMANDE: {query}
+DOCUMENT:"""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+            res = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": AGENT_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False, "think": False,
+                    "options": {"temperature": 0.1, "num_predict": 700},
+                },
+            )
+            return res.json().get("message", {}).get("content", "Résultat indisponible.").strip()
+    except Exception as e:
+        logger.error(f"Comptable agent error: {e}")
+        return f"⚠️ Erreur agent Comptable: {str(e)[:100]}"
+
+
+async def run_traducteur(payload: dict, lang: str) -> str:
+    """Agent Traducteur: documents techniques et commerciaux TP."""
+    query = payload.get("message", "")
+    lang_instr = {"fr": "Français.", "pt": "Português europeu (PT-PT).", "en": "English."}.get(lang, "Français.")
+    prompt = f"""Tu es le Traducteur Multilingue de LEGA.
+Tu traduis des documents techniques et commerciaux liés aux engins de travaux publics (pelleteuses, grues, chargeuses, etc.).
+Langues : FR, PT (européen), EN, ES, DE, IT.
+Règles :
+- Conserver la mise en page originale (titres, listes, tableaux)
+- Utiliser la terminologie technique correcte du secteur TP
+- Pour PT : utiliser le portugais européen (pas brésilien)
+- Indiquer la langue source et cible en en-tête
+Langue de réponse: {lang_instr}
+
+TEXTE À TRADUIRE / DEMANDE: {query}
+TRADUCTION:"""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+            res = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": AGENT_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False, "think": False,
+                    "options": {"temperature": 0.2, "num_predict": 800},
+                },
+            )
+            return res.json().get("message", {}).get("content", "Résultat indisponible.").strip()
+    except Exception as e:
+        logger.error(f"Traducteur agent error: {e}")
+        return f"⚠️ Erreur agent Traducteur: {str(e)[:100]}"
+
+
+async def run_demandes_prix(payload: dict, lang: str) -> str:
+    """Agent Demandes de Prix: rédige des demandes aux fournisseurs/transporteurs."""
+    query = payload.get("message", "")
+    lang_instr = {"fr": "Français.", "pt": "Português europeu (PT-PT).", "en": "English."}.get(lang, "Français.")
+    prompt = f"""Tu es l'Agent Demandes de Prix de LEGA.
+Tu rédiges des demandes de prix professionnelles aux fournisseurs et transporteurs pour des engins TP d'occasion.
+Format : objet clair, description précise de la machine recherchée (marque, modèle, année souhaitée, heures max, état), budget indicatif si fourni, délai souhaité, coordonnées LEGA.
+Ton : professionnel, direct, bilingue FR/PT si fournisseur portugais.
+Langue principale: {lang_instr}
+
+DEMANDE: {query}
+EMAIL:"""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+            res = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": AGENT_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False, "think": False,
+                    "options": {"temperature": 0.3, "num_predict": 500},
+                },
+            )
+            return res.json().get("message", {}).get("content", "Résultat indisponible.").strip()
+    except Exception as e:
+        logger.error(f"DemandePrix agent error: {e}")
+        return f"⚠️ Erreur agent Demandes de Prix: {str(e)[:100]}"
+
+
+_DOC_KW = {"manuel","manuels","manual","manuais","fiche technique","ficha técnica","datasheet",
+           "data sheet","documentation","doc technique","pdf technique","certificat ce",
+           "certificação","homolog","ce marking","guide d'utilisation","mode d'emploi",
+           "technical spec","guide technique","notice","livret","schéma","schémas"}
+
+_DOC_REDIRECT = {
+    "fr": "Pour consulter nos manuels et fiches techniques, rendez-vous dans la section Documentation de notre site vitrine. Connectez-vous avec votre compte client pour y accéder.",
+    "pt": "Para consultar os nossos manuais e fichas técnicas, aceda à secção Documentação do nosso site vitrine. Precisa de iniciar sessão com a sua conta de cliente.",
+    "en": "To access our manuals and technical documentation, please visit the Documentation section of our website. You need to log in with your client account.",
+    "es": "Para consultar nuestros manuales y fichas técnicas, visite la sección Documentación de nuestro sitio web. Debe iniciar sesión con su cuenta de cliente.",
+    "de": "Für unsere Handbücher und technischen Datenblätter besuchen Sie bitte den Bereich Dokumentation unserer Website. Bitte melden Sie sich mit Ihrem Kundenkonto an.",
+}
+
 async def run_standardiste(message: str, lang: str) -> str:
     """Standardiste Multilingue: réception client, catalogue, transfert agents (gemma4:e2b)."""
+    if any(w in message.lower() for w in _DOC_KW):
+        return _DOC_REDIRECT.get(lang, _DOC_REDIRECT["fr"])
     lang_instr = {
         "fr": "Français. Tu t'appelles Léa, tu es la standardiste de LEGA.",
         "pt": "Português europeu (PT-PT). Chamas-te Léa, és a recepcionista da LEGA.",
@@ -636,18 +1050,19 @@ async def run_standardiste(message: str, lang: str) -> str:
     catalogue_context = ""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.get(f"{LEGA_SITE_API}/products?status=available&limit=8")
+            r = await client.get(f"{LEGA_SITE_API}/products?status=available&limit=100")
             if r.status_code == 200:
                 data = r.json()
                 items_list = data.get("items", data) if isinstance(data, dict) else data
+                total_count = data.get("total", len(items_list)) if isinstance(data, dict) else len(items_list)
                 items = [
                     f"• {p['title']} — {p['price']} {p.get('currency','€')} ({p.get('category','')})"
                     if p.get('price') else
                     f"• {p['title']} — Prix sur demande ({p.get('category','')})"
-                    for p in (items_list or [])[:8]
+                    for p in (items_list or [])
                 ]
                 if items:
-                    catalogue_context = "\nCATALOGUE DISPONIBLE:\n" + "\n".join(items)
+                    catalogue_context = f"\nCATALOGUE DISPONIBLE ({total_count} annonces au total):\n" + "\n".join(items)
     except Exception:
         pass
 
@@ -690,6 +1105,11 @@ async def run_standardiste_streaming(message: str, lang: str, websocket: "WebSoc
     """Standardiste Léa : streaming Ollama gemma4:e2b → phrases → TTS → WS audio_chunk."""
     import base64
 
+    if any(w in message.lower() for w in _DOC_KW):
+        redir = _DOC_REDIRECT.get(lang, _DOC_REDIRECT["fr"])
+        await websocket.send_json({"type": "stream_chunk", "payload": redir, "metadata": {"done": True}})
+        return
+
     lang_instr = {
         "fr": "Français. Tu t'appelles Léa, tu es la standardiste de LEGA.",
         "pt": "Português europeu (PT-PT). Chamas-te Léa, és a recepcionista da LEGA.",
@@ -701,18 +1121,19 @@ async def run_standardiste_streaming(message: str, lang: str, websocket: "WebSoc
     catalogue_context = ""
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.get(f"{LEGA_SITE_API}/products?status=available&limit=8")
+            r = await c.get(f"{LEGA_SITE_API}/products?status=available&limit=100")
             if r.status_code == 200:
                 data = r.json()
                 items_list = data.get("items", data) if isinstance(data, dict) else data
+                total_count = data.get("total", len(items_list)) if isinstance(data, dict) else len(items_list)
                 lines = [
                     f"• {p['title']} — {p['price']} {p.get('currency','EUR')}"
                     if p.get("price") else
                     f"• {p['title']} — Prix sur demande"
-                    for p in (items_list or [])[:8]
+                    for p in (items_list or [])
                 ]
                 if lines:
-                    catalogue_context = "\nCATALOGUE DISPONIBLE:\n" + "\n".join(lines)
+                    catalogue_context = f"\nCATALOGUE DISPONIBLE ({total_count} annonces):\n" + "\n".join(lines)
     except Exception:
         pass
 
@@ -839,18 +1260,19 @@ async def run_vitrine_bot_streaming(message: str, lang: str, websocket: "WebSock
     catalogue_ctx = ""
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.get(f"{LEGA_SITE_API}/products?status=available&limit=8")
+            r = await c.get(f"{LEGA_SITE_API}/products?status=available&limit=100")
             if r.status_code == 200:
                 data = r.json()
                 items = data.get("items", data) if isinstance(data, dict) else data
+                total_count = data.get("total", len(items)) if isinstance(data, dict) else len(items)
                 lines = [
                     f"- {p.get('reference','') + ' ' if p.get('reference') else ''}{p['title']} : {p['price']} {p.get('currency','EUR')}"
                     if p.get("price") else
                     f"- {p.get('reference','') + ' ' if p.get('reference') else ''}{p['title']} : prix sur demande"
-                    for p in (items or [])[:8]
+                    for p in (items or [])
                 ]
                 if lines:
-                    catalogue_ctx = "\nCATALOGUE:\n" + "\n".join(lines)
+                    catalogue_ctx = f"\nCATALOGUE ({total_count} annonces):\n" + "\n".join(lines)
     except Exception:
         pass
 
@@ -946,6 +1368,11 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
     """Agent Léa unifié. Canal web → gemma2:2b. Canal voice/phone/whatsapp → gemma4:e2b + TTS."""
     import base64
 
+    if any(w in message.lower() for w in _DOC_KW):
+        redir = _DOC_REDIRECT.get(lang, _DOC_REDIRECT["fr"])
+        await websocket.send_json({"type": "stream_chunk", "payload": redir, "metadata": {"done": True}})
+        return
+
     is_voice = canal in ("phone", "whatsapp", "telegram", "voice")
     model = AGENT_MODEL if is_voice else VITRINE_MODEL
 
@@ -965,18 +1392,19 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
     catalogue_ctx = ""
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.get(f"{LEGA_SITE_API}/products?status=available&limit=8")
+            r = await c.get(f"{LEGA_SITE_API}/products?status=available&limit=100")
             if r.status_code == 200:
                 data = r.json()
                 items = data.get("items", data) if isinstance(data, dict) else data
+                total_count = data.get("total", len(items)) if isinstance(data, dict) else len(items)
                 lines = [
                     f"- {p.get('reference','') + ' ' if p.get('reference') else ''}{p['title']} : {p['price']} {p.get('currency','EUR')}"
                     if p.get("price") else
                     f"- {p.get('reference','') + ' ' if p.get('reference') else ''}{p['title']} : prix sur demande"
-                    for p in (items or [])[:8]
+                    for p in (items or [])
                 ]
                 if lines:
-                    catalogue_ctx = "\nCATALOGUE:\n" + "\n".join(lines)
+                    catalogue_ctx = f"\nCATALOGUE ({total_count} annonces):\n" + "\n".join(lines)
     except Exception:
         pass
 
@@ -992,6 +1420,9 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
         f"Tu es Léa, assistante multilingue de LEGA.PT, spécialisée en engins de travaux publics d'occasion.\n"
         f"Langue: {lang_instr}\n"
         f"{catalogue_ctx}\n"
+        f"IMPORTANT: LEGA.PT vend uniquement des engins d'occasion. Nous ne faisons PAS de réparations, "
+        f"maintenance, location, ni pièces détachées. Si le client demande ces services, explique-lui "
+        f"poliment que nous ne proposons pas ce service et que nous vendons uniquement des machines TP d'occasion.\n"
         f"RÈGLES: {rules}\n"
         f"CLIENT: {message}\nLÉA:"
     )
@@ -1102,12 +1533,20 @@ SECTIONS ACTIVABLES (site_sections): hero, stats, search, catalogue, ai_banner, 
 COMMANDE ADMIN ({lang_instr}): {message}
 
 Réponds UNIQUEMENT avec ce JSON (une seule action):
-{{"action":"config_update"|"section_toggle","key":"nom_clé","value":"nouvelle_valeur","section":"nom_section","enabled":true|false,"confirmation":"message confirmatif court EN {lang.upper()}"}}
+{{"action":"config_update"|"section_toggle"|"product_add"|"product_update"|"product_status",
+  "key":"nom_clé","value":"valeur",
+  "section":"nom_section","enabled":true|false,
+  "product_id":"uuid si update/status",
+  "product":{{"title":"","category":"machines_tp|trucks|trailers|vans","brand":"","model":"","year":2020,"hours":5000,"price":45000,"currency":"EUR","location":"","description":"","status":"available|draft|sold|reserved"}},
+  "status":"available|draft|sold|reserved",
+  "confirmation":"message confirmatif court EN {lang.upper()}"}}
 
 Exemples:
 - "Change le slogan FR" → {{"action":"config_update","key":"slogan_fr","value":"Nouveau slogan","confirmation":"Slogan FR mis à jour."}}
 - "Désactive la section stats" → {{"action":"section_toggle","section":"stats","enabled":false,"confirmation":"Section stats désactivée."}}
-- "Mets le téléphone à +351 912 000 000" → {{"action":"config_update","key":"phone","value":"+351 912 000 000","confirmation":"Téléphone mis à jour."}}
+- "Ajoute une pelleteuse CAT 320D 2019 45000€" → {{"action":"product_add","product":{{"title":"CAT 320D","category":"machines_tp","brand":"CAT","model":"320D","year":2019,"price":45000,"currency":"EUR","status":"available"}},"confirmation":"Produit CAT 320D ajouté."}}
+- "Passe le produit abc-123 à vendu" → {{"action":"product_status","product_id":"abc-123","status":"sold","confirmation":"Produit marqué vendu."}}
+- "Mets le prix du produit abc-123 à 38000€" → {{"action":"product_update","product_id":"abc-123","product":{{"price":38000}},"confirmation":"Prix mis à jour."}}
 
 JSON:"""
 
@@ -1160,6 +1599,34 @@ JSON:"""
                     if r.status_code != 200:
                         return f"❌ Erreur API sections: HTTP {r.status_code}"
                     logger.info(f"site_manager: section_toggle {section}={enabled}")
+            elif action == "product_add":
+                product_data = action_json.get("product", {})
+                if not product_data.get("title"):
+                    return {"fr": "❌ Titre produit manquant.", "pt": "❌ Título do produto em falta.", "en": "❌ Product title missing."}.get(lang, "❌")
+                r = await client.post(f"{LEGA_SITE_API}/products", json=product_data)
+                if r.status_code not in (200, 201):
+                    return f"❌ Erreur création produit: HTTP {r.status_code} — {r.text[:80]}"
+                new_id = r.json().get("id", "?")
+                confirmation = action_json.get("confirmation", f"Produit ajouté (id: {new_id}).")
+                logger.info(f"site_manager: product_add id={new_id}")
+            elif action == "product_update":
+                pid = action_json.get("product_id", "")
+                product_data = action_json.get("product", {})
+                if not pid:
+                    return {"fr": "❌ ID produit manquant.", "pt": "❌ ID do produto em falta.", "en": "❌ Product ID missing."}.get(lang, "❌")
+                r = await client.put(f"{LEGA_SITE_API}/products/{pid}", json=product_data)
+                if r.status_code != 200:
+                    return f"❌ Erreur mise à jour produit: HTTP {r.status_code} — {r.text[:80]}"
+                logger.info(f"site_manager: product_update id={pid}")
+            elif action == "product_status":
+                pid = action_json.get("product_id", "")
+                status_val = action_json.get("status", "available")
+                if not pid:
+                    return {"fr": "❌ ID produit manquant.", "pt": "❌ ID do produto em falta.", "en": "❌ Product ID missing."}.get(lang, "❌")
+                r = await client.patch(f"{LEGA_SITE_API}/products/{pid}/status", json={"status": status_val})
+                if r.status_code != 200:
+                    return f"❌ Erreur statut produit: HTTP {r.status_code} — {r.text[:80]}"
+                logger.info(f"site_manager: product_status id={pid} → {status_val}")
             else:
                 return {"fr": "❌ Action non reconnue.", "pt": "❌ Ação não reconhecida.", "en": "❌ Unknown action."}.get(lang, "❌")
     except Exception as e:
@@ -1176,6 +1643,10 @@ AGENT_EXECUTORS = {
     "documentation": run_documentation,
     "site_manager": run_site_manager,
     "standardiste": lambda payload, lang: run_standardiste(payload.get("message", ""), lang),
+    "logistique": run_logistique,
+    "comptable": run_comptable,
+    "traducteur": run_traducteur,
+    "demandes_prix": run_demandes_prix,
 }
 
 
@@ -1249,6 +1720,14 @@ async def task_worker():
                 if executor:
                     try:
                         result = await executor(payload, lang)
+
+                        # Détecter brouillon Sam en attente de confirmation
+                        extra_meta: dict = {}
+                        draft_match = re.search(r'___DRAFT_ID:([a-f0-9\-]+)___', result)
+                        if draft_match:
+                            extra_meta = {"confirm_required": True, "draft_id": draft_match.group(1)}
+                            result = result[:draft_match.start()].rstrip()
+
                         await update_task(task_id, "done", {"text": result})
 
                         # Push result via WebSocket if client still connected
@@ -1262,6 +1741,7 @@ async def task_worker():
                                         "task_id": task_id,
                                         "agent": agent_name,
                                         "done": True,
+                                        **extra_meta,
                                     },
                                 })
                             except Exception as e:
@@ -1494,12 +1974,50 @@ async def websocket_endpoint(ws: WebSocket, token: str = None):
 
     logger.info(f"WS connected: {session_id} (user {user_id[:8]}, admin={is_admin})")
 
+    # Envoyer message d'accueil Tony à la connexion
+    _tony_welcome = {
+        "fr": "Bonjour ! Je suis Tony, votre responsable de bureau LEGA.\nJe coordonne votre équipe d'agents IA. Que puis-je faire pour vous ?",
+        "pt": "Olá! Sou o Tony, o seu responsável de bureau LEGA.\nCoordenо a sua equipa de agentes IA. Em que posso ajudar?",
+        "en": "Hello! I'm Tony, your LEGA office manager.\nI coordinate your AI agent team. How can I help you?",
+    }
+    await ws.send_json({
+        "type": "welcome",
+        "payload": _tony_welcome["fr"],
+        "metadata": {"agent": "tony", "texts": _tony_welcome},
+    })
+
     try:
         while True:
             data = await ws.receive_text()
             payload_raw = json.loads(data)
 
             if payload_raw.get("type") == "ping":
+                continue
+
+            # Fast-path : confirmation envoi email Sam
+            draft_id = payload_raw.get("draft_id")
+            if draft_id and payload_raw.get("payload") == "CONFIRM_SEND":
+                draft = sam_pending.pop(draft_id, None)
+                if draft and SMTP_FROM and SMTP_PASSWORD:
+                    try:
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(None, _smtp_send, draft["to_addr"], draft["subject"], draft["body"])
+                        await ws.send_json({"type": "agent_response",
+                            "payload": f"✅ Email envoyé à {draft['to_addr']}",
+                            "metadata": {"done": True, "agent": "sam_comms"}})
+                        logger.info(f"sam_comms: email confirmé → {draft['to_addr']}")
+                    except Exception as e:
+                        await ws.send_json({"type": "agent_response",
+                            "payload": f"⚠️ Envoi échoué : {str(e)[:120]}",
+                            "metadata": {"done": True, "agent": "sam_comms", "error": True}})
+                elif draft and not SMTP_PASSWORD:
+                    await ws.send_json({"type": "agent_response",
+                        "payload": "⚠️ SMTP non configuré — email non envoyé.",
+                        "metadata": {"done": True, "agent": "sam_comms"}})
+                else:
+                    await ws.send_json({"type": "agent_response",
+                        "payload": "⚠️ Brouillon introuvable ou expiré.",
+                        "metadata": {"done": True, "agent": "sam_comms"}})
                 continue
 
             user_msg = payload_raw.get("payload", "")
@@ -1532,140 +2050,18 @@ async def websocket_endpoint(ws: WebSocket, token: str = None):
                 await asyncio.sleep(0.05)
                 continue
 
-            # Tony classifie l'intention
-            classification = await tony_classify(user_msg, client_lang)
-            intent = classification.get("intent", "general_chat")
-            lang = classification.get("lang", "fr")
-            agent = classification.get("agent")
+            # Étape 1 — Accusé réception instantané (keyword, zéro LLM)
+            quick_ack = tony_quick_ack(user_msg, client_lang)
+            await ws.send_json({
+                "type": "thinking",
+                "payload": quick_ack,
+                "metadata": {"stage": "thinking"},
+            })
 
-            if intent == "general_chat" or not agent:
-                # Réponse directe de Tony
-                _fb = {
-                    "fr": "Je peux rechercher des machines TP, rédiger des emails et surveiller le marché. Quelle est votre demande ?",
-                    "pt": "Pesquiso máquinas TP, redijo e-mails e monitorizo o mercado. Qual é a sua questão?",
-                    "en": "I search for construction machinery, write emails and monitor the market. What do you need?",
-                    "es": "Busco maquinaria TP, redacto correos y monitorizo el mercado. ¿En qué puedo ayudarle?",
-                }
-                direct = classification.get("direct_response") or _fb.get(lang, _fb["fr"])
-                await ws.send_json({
-                    "type": "agent_response",
-                    "payload": direct,
-                    "metadata": {"intent": intent, "lang": lang, "llm": TONY_MODEL},
-                })
-
-            else:
-                # Agent requis → vérifier abonnement si premium
-                latency_map = {"max_search": 180, "sam_comms": 90, "visa_vision": 10, "documentation": 30, "site_manager": 15}
-                estimated = latency_map.get(agent, 120)
-
-                # site_manager réservé aux sessions admin
-                if agent == "site_manager" and not is_admin:
-                    block_msg = {
-                        "fr": "🔒 La gestion du site est réservée à l'administrateur.",
-                        "pt": "🔒 A gestão do site é reservada ao administrador.",
-                        "en": "🔒 Site management is restricted to administrators.",
-                    }
-                    await ws.send_json({
-                        "type": "agent_response",
-                        "payload": block_msg.get(lang, block_msg["fr"]),
-                        "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "blocked"},
-                    })
-                    await asyncio.sleep(0.1)
-                    continue
-
-                if agent in PREMIUM_AGENTS:
-                    sub_status = await check_subscription(user_id, agent)
-
-                    if sub_status not in ("active", "trial"):
-                        # Pas abonné ou trial expiré → activer trial auto + notifier admin
-                        is_renewal = sub_status == "expired"
-                        await activate_trial(user_id, agent)
-                        logger.info(f"Trial activé: user {user_id[:8]} → {agent}")
-
-                        # Message upsell / trial activé — dans la langue détectée
-                        if lang == "pt":
-                            upsell = (
-                                f"🎯 O agente <b>{agent}</b> é premium.\n\n"
-                                f"✅ Ativei um <b>trial gratuito de 24h</b> para si!\n"
-                                f"A processar o seu pedido agora...\n\n"
-                                f"💡 Para acesso permanente: <b>49€/mês</b>. Contacte-nos."
-                            ) if not is_renewal else (
-                                f"🔄 O seu trial anterior expirou.\n"
-                                f"✅ Novo trial de 24h ativado! A processar...\n\n"
-                                f"💡 Acesso permanente: <b>49€/mês</b>."
-                            )
-                        elif lang == "en":
-                            upsell = (
-                                f"🎯 The <b>{agent}</b> agent is premium.\n\n"
-                                f"✅ I've activated a <b>free 24h trial</b> for you!\n"
-                                f"Processing your request now...\n\n"
-                                f"💡 Full access: <b>€49/month</b>. Contact us."
-                            ) if not is_renewal else (
-                                f"🔄 Your previous trial has expired.\n"
-                                f"✅ New 24h trial activated! Processing...\n\n"
-                                f"💡 Full access: <b>€49/month</b>."
-                            )
-                        else:
-                            upsell = (
-                                f"🎯 L'agent <b>{agent}</b> est premium.\n\n"
-                                f"✅ J'active un <b>trial gratuit 24h</b> pour vous !\n"
-                                f"Je traite votre demande maintenant...\n\n"
-                                f"💡 Accès permanent : <b>49€/mois</b>. Contactez-nous."
-                            ) if not is_renewal else (
-                                f"🔄 Votre trial précédent a expiré.\n"
-                                f"✅ Nouveau trial 24h activé ! Je traite votre demande...\n\n"
-                                f"💡 Accès permanent : <b>49€/mois</b>."
-                            )
-
-                        await ws.send_json({
-                            "type": "agent_response",
-                            "payload": upsell,
-                            "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "trial_activated"},
-                        })
-
-                        # Notification Telegram admin
-                        tg_msg = (
-                            f"🆕 <b>Trial activé</b>\n"
-                            f"Agent : <code>{agent}</code>\n"
-                            f"Session : <code>{session_id[:12]}</code>\n"
-                            f"Message : {user_msg[:200]}\n"
-                            f"Langue : {lang}\n"
-                            f"Renouvellement : {'oui' if is_renewal else 'non'}"
-                        )
-                        asyncio.create_task(notify_telegram(tg_msg))
-
-                        # Enregistrer en activation_requests pour suivi admin
-                        try:
-                            conn_act = await db_connect()
-                            await conn_act.execute(
-                                """INSERT INTO activation_requests (session_id, agent_name, user_message, status)
-                                   VALUES ($1, $2, $3, 'approved')""",
-                                session_id, agent, user_msg[:500],
-                            )
-                            await conn_act.close()
-                        except Exception as e:
-                            logger.warning(f"activation_requests insert failed: {e}")
-
-                ack = classification.get("ack_message") or (
-                    f"✅ Je délègue à {agent}... Résultat dans {classification.get('estimated_delay','quelques minutes')}."
-                    if lang != "pt" else
-                    f"✅ A delegar para {agent}... Resultado em {classification.get('estimated_delay','alguns minutos')}."
-                )
-                await ws.send_json({
-                    "type": "agent_response",
-                    "payload": ack,
-                    "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "delegated"},
-                })
-
-                # Créer la tâche en DB
-                task_id = await create_task(
-                    session_id=session_id,
-                    agent_name=agent,
-                    payload={"message": user_msg, "lang": lang},
-                    lang=lang,
-                    estimated_latency=estimated,
-                )
-                logger.info(f"Task created: {task_id} → {agent}")
+            # Étape 2 — Classification + dispatch en arrière-plan
+            asyncio.create_task(
+                tony_dispatch(user_msg, client_lang, ws, session_id, user_id, is_admin)
+            )
 
             await asyncio.sleep(0.1)
 

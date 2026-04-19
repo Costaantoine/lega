@@ -22,13 +22,25 @@ const STD_GREET: Record<StdLang, string> = {
   en: "Good day, LEGA — Lea speaking. How may I help you?",
 };
 
+const TONY_WELCOME: Record<string, string> = {
+  fr: "Bonjour ! Je suis Tony, votre responsable de bureau LEGA.\nJe coordonne votre équipe d'agents IA. Que puis-je faire pour vous ?",
+  pt: "Olá! Sou o Tony, o seu responsável de bureau LEGA.\nCoordenо a sua equipa de agentes IA. Em que posso ajudar?",
+  en: "Hello! I'm Tony, your LEGA office manager.\nI coordinate your AI agent team. How can I help you?",
+};
+
+const WAITING_TEXT: Record<string, string> = {
+  fr: "Tony reçoit votre message...",
+  pt: "Tony recebe a sua mensagem...",
+  en: "Tony is receiving your message...",
+};
+
 const T: any = {
   fr: {
     title: "🚜 LEGA", subtitle: "Assistant Travaux Publics",
     placeholder: "Votre question...", send: "Envoyer",
     tabs: { chat: "💬 Chat", catalogue: "📦 Catalogue", upload: "📸 Photo" },
     connecting: "Connexion...", connected: "En ligne", disconnected: "Hors ligne",
-    lang: "🇫🇷 FR", welcome: "Bonjour ! Je suis Léa, votre assistante LEGA.\n\nJe peux vous aider à :\n• Trouver des machines TP (pelleteuses, grues, chargeuses...)\n• Rédiger des emails professionnels\n• Estimer la valeur de vos machines\n• Surveiller le marché\n\nPosez votre question !",
+    lang: "🇫🇷 FR",
     noProducts: "Aucun produit disponible", loading: "Chargement...",
     uploadTitle: "Analyser une photo", uploadDesc: "Prenez une photo de machine ou sélectionnez-en une depuis votre galerie. Léa l'analysera pour vous.",
     uploadBtn: "Choisir / Prendre une photo", analyzeBtn: "Analyser",
@@ -39,7 +51,7 @@ const T: any = {
     placeholder: "A sua pergunta...", send: "Enviar",
     tabs: { chat: "💬 Chat", catalogue: "📦 Catálogo", upload: "📸 Foto" },
     connecting: "A ligar...", connected: "Online", disconnected: "Offline",
-    lang: "🇵🇹 PT", welcome: "Olá! Sou a Léa, a sua assistente LEGA.\n\nPosso ajudá-lo a:\n• Encontrar máquinas TP (escavadoras, gruas, carregadoras...)\n• Redigir e-mails profissionais\n• Estimar o valor das suas máquinas\n• Monitorizar o mercado\n\nFaça a sua pergunta!",
+    lang: "🇵🇹 PT",
     noProducts: "Nenhum produto disponível", loading: "A carregar...",
     uploadTitle: "Analisar uma foto", uploadDesc: "Tire uma foto de uma máquina ou selecione uma da sua galeria. Léa analisá-la-á.",
     uploadBtn: "Escolher / Tirar foto", analyzeBtn: "Analisar",
@@ -65,6 +77,9 @@ export default function ClientApp() {
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const [thinkingStatus, setThinkingStatus] = useState<"waiting" | "thinking" | "done" | null>(null);
+  const [thinkingText, setThinkingText] = useState("Tony reçoit votre message...");
+  const [agentBadge, setAgentBadge] = useState<string | null>(null);
 
   // Standardiste widget
   const [stdOpen, setStdOpen] = useState(false);
@@ -85,9 +100,17 @@ export default function ClientApp() {
   const fileInput = useRef<HTMLInputElement>(null);
   const t = T[lang];
 
-  // Init welcome message
+  // Afficher accueil Tony dans la bonne langue (remplace le 1er message si c'est un welcome)
   useEffect(() => {
-    setMsgs([{ role: "agent", text: T[lang].welcome, time: now() }]);
+    setMsgs(prev => {
+      if (prev.length === 0) return [{ role: "agent", text: TONY_WELCOME[lang] || TONY_WELCOME.fr, time: now() }];
+      // Mettre à jour le welcome si c'est le seul message (changement de langue)
+      if (prev.length === 1 && prev[0].role === "agent") {
+        const isWelcome = Object.values(TONY_WELCOME).some(w => prev[0].text === w);
+        if (isWelcome) return [{ role: "agent", text: TONY_WELCOME[lang] || TONY_WELCOME.fr, time: now() }];
+      }
+      return prev;
+    });
   }, [lang]);
 
   // Standardiste — greeting on open / lang change
@@ -146,6 +169,22 @@ export default function ClientApp() {
       try {
         const d = JSON.parse(e.data);
 
+        if (d.type === "welcome") {
+          const texts = d.metadata?.texts || {};
+          const welcomeText = texts[lang] || texts.fr || d.payload || "";
+          if (welcomeText) {
+            setMsgs(prev => {
+              if (prev.length === 0) return [{ role: "agent", text: welcomeText, time: now() }];
+              if (prev.length === 1 && prev[0].role === "agent") {
+                const isWelcome = Object.values(TONY_WELCOME).some(w => prev[0].text === w);
+                if (isWelcome) return [{ role: "agent", text: welcomeText, time: now() }];
+              }
+              return prev;
+            });
+          }
+          return;
+        }
+
         if (d.type === "audio_chunk" && ttsEnabledRef.current) {
           if (!audioCtxRef.current) audioCtxRef.current = new AudioContext();
           const ctx = audioCtxRef.current;
@@ -153,6 +192,13 @@ export default function ClientApp() {
           ctx.decodeAudioData(bytes.buffer.slice(0), buf => {
             audioQueueRef.current.push(buf); playNext(ctx);
           });
+          return;
+        }
+
+        if (d.type === "thinking") {
+          setThinkingStatus("thinking");
+          setThinkingText(d.payload || "Tony traite votre demande...");
+          setAgentBadge(d.metadata?.agent || null);
           return;
         }
 
@@ -167,9 +213,10 @@ export default function ClientApp() {
           return;
         }
 
-        if (d.type === "agent_response") {
+        if (d.type === "agent_response" || d.type === "task_result") {
+          setThinkingStatus("done");
+          setTimeout(() => setThinkingStatus(null), 300);
           const text = stripEmoji(d.payload || "");
-          if (d.metadata?.agent === "tony") return; // Ignorer greeting Tony — ce chat affiche Léa
           if (d.metadata?.agent === "standardiste") {
             setStdMsgs(p => {
               const last = p[p.length - 1];
@@ -179,7 +226,7 @@ export default function ClientApp() {
             });
             setStdLoading(false);
           } else {
-            setMsgs(p => [...p, { role: "agent", text, time: now() }]);
+            if (text) setMsgs(p => [...p, { role: "agent", text, time: now() }]);
           }
         }
       } catch { }
@@ -211,10 +258,14 @@ export default function ClientApp() {
     const text = input.trim();
     setInput("");
     setMsgs(p => [...p, { role: "user", text, time: now() }]);
+    setThinkingStatus("waiting");
+    setThinkingText(WAITING_TEXT[lang] || WAITING_TEXT.fr);
+    setAgentBadge(null);
     if (ws.current?.readyState === WebSocket.OPEN) {
       ws.current.send(JSON.stringify({ type: "user_message", payload: text, lang }));
     } else {
       connectWS();
+      setThinkingStatus(null);
       setMsgs(p => [...p, { role: "agent", text: lang === "fr" ? "⚠️ Reconnexion en cours..." : "⚠️ A reconectar...", time: now() }]);
     }
   };
@@ -272,6 +323,14 @@ export default function ClientApp() {
 
   return (
     <div style={{ height: "100dvh", display: "flex", flexDirection: "column", maxWidth: 560, margin: "0 auto", position: "relative" }}>
+      <style>{`
+        @keyframes tonyPulse { 0%,80%,100%{opacity:0} 40%{opacity:1} }
+        .tony-dot { display:inline-block; animation:tonyPulse 1.4s infinite; font-size:14px; }
+        .tony-dot:nth-child(2) { animation-delay:0.2s; }
+        .tony-dot:nth-child(3) { animation-delay:0.4s; }
+        .tony-thinking { transition: opacity 0.3s ease; }
+        .tony-thinking.fade-out { opacity:0; }
+      `}</style>
 
       {/* Header */}
       <div style={{ background: "#0a1628", borderBottom: "1px solid #1e293b", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
@@ -310,6 +369,27 @@ export default function ClientApp() {
                   {m.time && <span style={{ fontSize: 10, color: "#475569", marginTop: 2, paddingInline: 4 }}>{m.time}</span>}
                 </div>
               ))}
+              {thinkingStatus && (
+                <div className={`tony-thinking${thinkingStatus === "done" ? " fade-out" : ""}`} style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+                  <div style={{
+                    background: "#f0f2f5", borderRadius: 12, padding: "8px 14px",
+                    fontSize: 13, color: "#555", margin: "4px 0",
+                    display: "flex", alignItems: "center", gap: 6, maxWidth: "85%",
+                  }}>
+                    <span style={{ whiteSpace: "pre-wrap" }}>{thinkingText}</span>
+                    {agentBadge && (
+                      <span style={{ fontSize: 10, background: "#3b82f6", color: "#fff", padding: "1px 7px", borderRadius: 8, flexShrink: 0 }}>
+                        {agentBadge}
+                      </span>
+                    )}
+                    <span style={{ flexShrink: 0 }}>
+                      <span className="tony-dot">●</span>
+                      <span className="tony-dot">●</span>
+                      <span className="tony-dot">●</span>
+                    </span>
+                  </div>
+                </div>
+              )}
               <div ref={messagesEnd} />
             </div>
             <div style={{ padding: "10px 12px", borderTop: "1px solid #1e293b", background: "#0f172a", display: "flex", gap: 8 }}>
