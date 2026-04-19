@@ -213,6 +213,12 @@ export default function ClientApp() {
           return;
         }
 
+        if (d.type === "agent_response_enriched") {
+          const text = stripEmoji(d.payload || "");
+          if (text) setMsgs(p => [...p, { role: "agent", text, time: now() }]);
+          return;
+        }
+
         if (d.type === "agent_response" || d.type === "task_result") {
           setThinkingStatus("done");
           setTimeout(() => setThinkingStatus(null), 300);

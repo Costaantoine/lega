@@ -527,6 +527,99 @@ def tony_quick_ack(message: str, client_lang: str = None) -> str:
             "en":"Processing your request..."}.get(lang,"Je traite votre demande...")
 
 
+# ── General chat — système deux temps ────────────────────────────────────────
+
+_TONY_QUICK_CHAT = """\
+Tu es Tony, responsable de bureau LEGA. Tu coordonnes 13 agents IA spécialisés :
+max_search, sam_comms, traducteur, visa_vision, comptable, logistique, documentation,
+demandes_prix, lea, agenda, lea_extract, site_manager, standardiste.
+
+Réponds en UNE phrase courte et naturelle à cette question : {message}
+Langue : {lang}
+Ton : professionnel et chaleureux.
+Si c'est une question sur tes capacités ou tes agents → réponds précisément avec le bon chiffre ou nom.
+Si c'est une salutation → réponds chaleureusement.
+Si hors domaine machines TP → redirige poliment vers ton domaine.
+Ne jamais répéter un message générique figé."""
+
+_TONY_ENRICHED_CHAT = """\
+Tu es Tony, responsable de bureau LEGA. Tu coordonnes 13 agents IA :
+- lea : standardiste vitrine clients
+- sam_comms : emails et communications B2B
+- agenda : planning et brief matinal Telegram 7h00
+- max_search : recherche machines TP et prix marché (Premium)
+- lea_extract : extraction specs, parsing HTML (Premium)
+- visa_vision : analyse photos et OCR (Premium)
+- comptable : devis et factures TVA FR/PT (Premium)
+- documentation : manuels techniques RAG (Premium)
+- traducteur : traduction FR/PT/EN/ES/DE/IT (Premium)
+- logistique : coûts transport France-Portugal (Premium)
+- demandes_prix : demandes prix fournisseurs (Premium)
+- site_manager : gestion site vitrine (Admin uniquement)
+
+Question : {message}
+Langue : {lang}
+Réponds de façon naturelle, précise et utile en 2-4 phrases.
+Si question sur les agents → donne les infos concrètes.
+Si hors domaine → redirige poliment."""
+
+
+async def _ollama_quick(model: str, prompt: str, num_predict: int, timeout: float) -> str:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5.0)) as client:
+        res = await client.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False, "think": False,
+                "options": {"temperature": 0.5, "num_predict": num_predict},
+            },
+        )
+        return res.json().get("message", {}).get("content", "").strip()
+
+
+async def _send_enriched_if_better(ws, message: str, lang: str, quick_text: str, session_id: str):
+    try:
+        prompt = _TONY_ENRICHED_CHAT.format(message=message, lang=lang)
+        enriched = await _ollama_quick(AGENT_MODEL, prompt, 300, 20.0)
+        if len(enriched) > len(quick_text) * 1.4 and len(enriched) > 80:
+            await ws.send_json({
+                "type": "agent_response_enriched",
+                "payload": enriched,
+                "metadata": {"intent": "general_chat", "lang": lang, "agent": "tony_enriched"},
+            })
+    except Exception as e:
+        logger.debug(f"general_chat enriched skipped [{session_id[:8]}]: {e}")
+
+
+async def handle_general_chat(
+    ws, message: str, lang: str, classification: dict, session_id: str
+) -> None:
+    _fallback = {
+        "fr": "Je coordonne 13 agents IA pour les machines TP. Que puis-je faire pour vous ?",
+        "pt": "Coordeno 13 agentes IA para máquinas TP. Em que posso ajudar?",
+        "en": "I coordinate 13 AI agents for construction machinery. How can I help?",
+        "es": "Coordino 13 agentes IA para maquinaria TP. ¿En qué puedo ayudarle?",
+    }
+    # Appel unique gemma4:e2b avec contexte complet (même modèle que classify, déjà chaud → +8-12s)
+    # Le système deux-temps (gemma2 quick) n'est pas viable ici car Ollama single-model
+    # impose un swap gemma4→gemma2 de 35-45s après classify, soit plus lent que cette approche.
+    try:
+        prompt = _TONY_ENRICHED_CHAT.format(message=message, lang=lang)
+        response = await _ollama_quick(AGENT_MODEL, prompt, 200, 40.0)
+        if not response:
+            response = _fallback.get(lang, _fallback["fr"])
+    except Exception as e:
+        logger.warning(f"general_chat enriched failed [{session_id[:8]}]: {type(e).__name__} {e}")
+        response = classification.get("direct_response") or _fallback.get(lang, _fallback["fr"])
+
+    await ws.send_json({
+        "type": "agent_response",
+        "payload": response,
+        "metadata": {"intent": "general_chat", "lang": lang, "agent": "tony_interface"},
+    })
+
+
 async def tony_dispatch(
     user_msg: str, client_lang: str,
     ws: "WebSocket", session_id: str, user_id: str, is_admin: bool,
@@ -539,18 +632,7 @@ async def tony_dispatch(
         agent  = classification.get("agent")
 
         if intent == "general_chat" or not agent:
-            _fb = {
-                "fr": "Je peux rechercher des machines TP, rédiger des emails et surveiller le marché. Quelle est votre demande ?",
-                "pt": "Pesquiso máquinas TP, redijo e-mails e monitorizo o mercado. Qual é a sua questão?",
-                "en": "I search for construction machinery, write emails and monitor the market. What do you need?",
-                "es": "Busco maquinaria TP, redacto correos y monitorizo el mercado. ¿En qué puedo ayudarle?",
-            }
-            direct = classification.get("direct_response") or _fb.get(lang, _fb["fr"])
-            await ws.send_json({
-                "type": "agent_response",
-                "payload": direct,
-                "metadata": {"intent": intent, "lang": lang, "llm": AGENT_MODEL},
-            })
+            await handle_general_chat(ws, user_msg, lang, classification, session_id)
             return
 
         latency_map = {"max_search": 180, "sam_comms": 90, "visa_vision": 10, "documentation": 30, "site_manager": 15}
