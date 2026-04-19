@@ -7,6 +7,31 @@
 
 ---
 
+## ✅ FAIT — Session 12 (2026-04-19)
+
+### 1. general_chat — réponse intelligente (remplace fallback hardcodé)
+- Ancien : message figé "Je peux rechercher des machines TP..." pour toutes les questions
+- Nouveau : `handle_general_chat` → appel gemma4:e2b avec `_TONY_ENRICHED_CHAT`
+- Prompt : liste des 13 agents, instructions contextuelles, 2-4 phrases naturelles
+- Paramètres : 200 tokens, timeout 40s (same model as classify → déjà chaud, +10-15s)
+- Système deux-temps gemma2/gemma4 abandonné : swap Ollama gemma4→gemma2 coûte 35-45s
+  (plus lent que réponse gemma4 déjà chaud). Architecturalement non viable.
+- Frontend : handle `agent_response_enriched` → ajoute au chat principal
+
+### 2. Résultats tests finaux
+- "combien d'agents ?" → "treize agents IA, rôles spécialisés comme Lea..." ✅ 24s
+- "bonjour comment tu vas" → "Je vais très bien, merci..." ✅ 55s
+- "quel temps fait-il ?" → "Je n'ai pas accès aux infos météo, consultez..." ✅ 57s
+- "trouve moi une pelleteuse" → max_search dispatché ✅ 30s
+
+### 3. Note performance
+- Classify (gemma4:e2b) : 20-35s selon charge Ollama
+- general_chat enriched (gemma4:e2b) : +10-25s après classify (même modèle chaud)
+- Total general_chat : 30-60s selon charge
+- Agents spécialisés (max_search etc.) : classify seul, puis exécution en background
+
+---
+
 ## ✅ FAIT — Session 11 (2026-04-19)
 
 ### 1. Tony routing confirmé (port 3001)
