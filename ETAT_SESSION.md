@@ -3,7 +3,34 @@
 
 ---
 
-## 🗓 Dernière mise à jour : 2026-04-20 (~06h00 UTC)
+## 🗓 Dernière mise à jour : 2026-04-20 (~07h36 UTC)
+
+---
+
+## ✅ FAIT — Session 14 (2026-04-20)
+
+### Correction 1 — Fix hallucination Tony
+
+- **Ordre swap** : `create_task()` appelé EN PREMIER, ack envoyé APRÈS avec le task_id réel
+- **Ack honnête** : "✅ Demande transmise à max_search [ref: xxxxxxxx]\nRésultat dans environ 2-4 min."
+- **user_id dans payload** : inclus pour traçabilité et stockage search_results
+- Plus possible pour Tony de "simuler" une action — la tâche existe en DB avant tout message
+
+### Correction 2 — Panneau "Annonces trouvées" (port 3001)
+
+- **Table `search_results`** créée au startup avec colonnes : id, task_id, user_id, title, brand, model, year, price, description, photo_url, source_url, status, created_at
+- **`run_max_search`** : appelle `search_web()` (SearXNG) et stocke les résultats en DB via `_store_search_results()`
+- **3 nouveaux endpoints API** :
+  - `GET /api/search-results` → liste pending/selected
+  - `POST /api/search-results/{id}/publish` → crée produit dans `products` + status='published'
+  - `POST /api/search-results/{id}/reject` → status='rejected', disparaît du panneau
+- **Frontend shop (port 3001)** : onglet "📋 Annonces" ajouté entre Chat et Catalogue
+  - Cartes avec photo (ou 🚜 placeholder), titre, marque/modèle/année, prix, description, lien source
+  - Bouton "✅ Publier sur la vitrine" (orange) + bouton "❌ Rejeter" (gris)
+  - Publication → crée produit local visible sur port 3001 catalogue
+  - Jamais de publication automatique — validation manuelle obligatoire
+
+### Commit : `4c897fa` — feat: panneau annonces trouvées + fix Tony hallucination
 
 ---
 
