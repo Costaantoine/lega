@@ -76,6 +76,7 @@ export default function ClientApp() {
   const [prodLoading, setProdLoading] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [resultsLoading, setResultsLoading] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
@@ -198,6 +199,11 @@ export default function ClientApp() {
           return;
         }
 
+        if (d.type === "search_results_ready") {
+          refreshCount();
+          return;
+        }
+
         if (d.type === "thinking") {
           setThinkingStatus("thinking");
           setThinkingText(d.payload || "Tony traite votre demande...");
@@ -253,12 +259,14 @@ export default function ClientApp() {
 
   useEffect(() => {
     connectWS();
+    refreshCount(); // count initial au chargement
     const hb = setInterval(() => {
       if (ws.current?.readyState === WebSocket.OPEN) {
         ws.current.send(JSON.stringify({ type: "ping", payload: "alive" }));
       }
     }, 30000);
-    return () => { clearInterval(hb); ws.current?.close(); };
+    const poll = setInterval(refreshCount, 30000); // badge toutes les 30s
+    return () => { clearInterval(hb); clearInterval(poll); ws.current?.close(); };
   }, []);
 
   // Send message
@@ -290,13 +298,22 @@ export default function ClientApp() {
     setProdLoading(false);
   };
 
+  // Refresh count only (polling léger)
+  const refreshCount = async () => {
+    try {
+      const res = await fetch(`${API}/search-results`);
+      const data = await res.json();
+      if (Array.isArray(data)) setPendingCount(data.length);
+    } catch { }
+  };
+
   // Load search results (annonces trouvées par Max)
   const loadSearchResults = async () => {
     setResultsLoading(true);
     try {
       const res = await fetch(`${API}/search-results`);
       const data = await res.json();
-      if (Array.isArray(data)) setSearchResults(data);
+      if (Array.isArray(data)) { setSearchResults(data); setPendingCount(data.length); }
     } catch { }
     setResultsLoading(false);
   };
@@ -431,6 +448,32 @@ export default function ClientApp() {
                 </div>
               )}
               <div ref={messagesEnd} />
+            </div>
+            {/* Bouton Annonces Max — visible dans le chat quand il y a des résultats */}
+            <div style={{ padding: "6px 12px", background: "#0f172a", borderTop: "1px solid #1e293b" }}>
+              <button
+                onClick={() => setTab("annonces")}
+                style={{
+                  width: "100%", padding: "10px 16px", borderRadius: 8, border: "none",
+                  background: pendingCount > 0 ? "#E8641E" : "#1e293b",
+                  color: pendingCount > 0 ? "#fff" : "#475569",
+                  cursor: "pointer", display: "flex", alignItems: "center",
+                  justifyContent: "space-between", fontWeight: 700, fontSize: 13,
+                  transition: "background 0.2s",
+                }}
+              >
+                <span>📋 Annonces trouvées par Max</span>
+                {pendingCount > 0 ? (
+                  <span style={{
+                    background: "#dc2626", color: "#fff", borderRadius: "50%",
+                    minWidth: 22, height: 22, padding: "0 5px",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 12, fontWeight: 700,
+                  }}>{pendingCount}</span>
+                ) : (
+                  <span style={{ fontSize: 11, color: "#475569", fontWeight: 400 }}>Aucune annonce</span>
+                )}
+              </button>
             </div>
             <div style={{ padding: "10px 12px", borderTop: "1px solid #1e293b", background: "#0f172a", display: "flex", gap: 8 }}>
               <input
@@ -695,12 +738,22 @@ export default function ClientApp() {
 
       {/* Bottom tab bar */}
       <div style={{ display: "flex", borderTop: "1px solid #1e293b", background: "#0a1628", flexShrink: 0 }}>
-        {(["chat", "catalogue", "upload"] as Tab[]).map(id => (
+        {(["chat", "annonces", "catalogue", "upload"] as Tab[]).map(id => (
           <button key={id} onClick={() => setTab(id)}
             style={{ flex: 1, padding: "12px 0 10px", border: "none", background: "transparent", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
               color: tab === id ? "#60a5fa" : "#64748b", borderTop: tab === id ? "2px solid #3b82f6" : "2px solid transparent" }}>
-            <span style={{ fontSize: 20 }}>{t.tabs[id].split(" ")[0]}</span>
-            <span style={{ fontSize: 10, fontWeight: tab === id ? 600 : 400 }}>{t.tabs[id].split(" ").slice(1).join(" ")}</span>
+            <div style={{ position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+              <span style={{ fontSize: 18 }}>{t.tabs[id].split(" ")[0]}</span>
+              {id === "annonces" && pendingCount > 0 && (
+                <span style={{
+                  position: "absolute", top: -5, right: -8,
+                  background: "#dc2626", color: "#fff", borderRadius: "50%",
+                  width: 15, height: 15, fontSize: 9, fontWeight: 700,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}>{pendingCount > 9 ? "9+" : pendingCount}</span>
+              )}
+            </div>
+            <span style={{ fontSize: 9, fontWeight: tab === id ? 600 : 400 }}>{t.tabs[id].split(" ").slice(1).join(" ")}</span>
           </button>
         ))}
       </div>
