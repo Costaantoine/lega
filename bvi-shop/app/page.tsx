@@ -13,7 +13,8 @@ const API_BASE = API.replace("/api", "");
 
 type Msg = { role: "user" | "agent"; text: string; time?: string; uploading?: boolean; streaming?: boolean };
 type Product = { id: number; title: string; price: number; currency: string; status: string; images?: any; category: string; description?: string };
-type Tab = "chat" | "catalogue" | "upload";
+type SearchResult = { id: string; title: string; brand?: string; model?: string; year?: number; price?: string; description?: string; photo_url?: string; source_url?: string; status: string; created_at: string };
+type Tab = "chat" | "annonces" | "catalogue" | "upload";
 type StdLang = "fr" | "pt" | "en";
 
 const STD_GREET: Record<StdLang, string> = {
@@ -38,7 +39,7 @@ const T: any = {
   fr: {
     title: "🚜 LEGA", subtitle: "Assistant Travaux Publics",
     placeholder: "Votre question...", send: "Envoyer",
-    tabs: { chat: "💬 Chat", catalogue: "📦 Catalogue", upload: "📸 Photo" },
+    tabs: { chat: "💬 Chat", annonces: "📋 Annonces", catalogue: "📦 Catalogue", upload: "📸 Photo" },
     connecting: "Connexion...", connected: "En ligne", disconnected: "Hors ligne",
     lang: "🇫🇷 FR",
     noProducts: "Aucun produit disponible", loading: "Chargement...",
@@ -49,7 +50,7 @@ const T: any = {
   pt: {
     title: "🚜 LEGA", subtitle: "Assistente Obras Públicas",
     placeholder: "A sua pergunta...", send: "Enviar",
-    tabs: { chat: "💬 Chat", catalogue: "📦 Catálogo", upload: "📸 Foto" },
+    tabs: { chat: "💬 Chat", annonces: "📋 Anúncios", catalogue: "📦 Catálogo", upload: "📸 Foto" },
     connecting: "A ligar...", connected: "Online", disconnected: "Offline",
     lang: "🇵🇹 PT",
     noProducts: "Nenhum produto disponível", loading: "A carregar...",
@@ -73,6 +74,8 @@ export default function ClientApp() {
   const [wsStatus, setWsStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
   const [products, setProducts] = useState<Product[]>([]);
   const [prodLoading, setProdLoading] = useState(false);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [resultsLoading, setResultsLoading] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
@@ -287,8 +290,39 @@ export default function ClientApp() {
     setProdLoading(false);
   };
 
+  // Load search results (annonces trouvées par Max)
+  const loadSearchResults = async () => {
+    setResultsLoading(true);
+    try {
+      const res = await fetch(`${API}/search-results`);
+      const data = await res.json();
+      if (Array.isArray(data)) setSearchResults(data);
+    } catch { }
+    setResultsLoading(false);
+  };
+
+  const publishResult = async (id: string) => {
+    try {
+      const res = await fetch(`${API}/search-results/${id}/publish`, { method: "POST" });
+      const data = await res.json();
+      if (data.status === "ok") {
+        setSearchResults(p => p.filter(r => r.id !== id));
+        setMsgs(prev => [...prev, { role: "agent", text: data.message || "✅ Annonce publiée sur la vitrine.", time: now() }]);
+        setTab("chat");
+      }
+    } catch { }
+  };
+
+  const rejectResult = async (id: string) => {
+    try {
+      await fetch(`${API}/search-results/${id}/reject`, { method: "POST" });
+      setSearchResults(p => p.filter(r => r.id !== id));
+    } catch { }
+  };
+
   useEffect(() => {
     if (tab === "catalogue") loadProducts();
+    if (tab === "annonces") loadSearchResults();
   }, [tab]);
 
   // Photo selection
@@ -412,6 +446,68 @@ export default function ClientApp() {
               </button>
             </div>
           </>
+        )}
+
+        {/* ANNONCES TAB */}
+        {tab === "annonces" && (
+          <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <span style={{ fontWeight: 700, fontSize: 15 }}>📋 Annonces trouvées par Max</span>
+              <button onClick={loadSearchResults} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #334155", background: "#1e293b", color: "#94a3b8", cursor: "pointer", fontSize: 12 }}>🔄</button>
+            </div>
+            {resultsLoading ? (
+              <div style={{ textAlign: "center", padding: 40, color: "#475569" }}>Chargement...</div>
+            ) : searchResults.length === 0 ? (
+              <div style={{ textAlign: "center", padding: 60, color: "#475569" }}>
+                <div style={{ fontSize: 36, marginBottom: 12 }}>🔍</div>
+                <div style={{ fontSize: 14 }}>Aucune annonce — demandez à Tony de rechercher</div>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                {searchResults.map(r => (
+                  <div key={r.id} style={{ background: "#1e293b", borderRadius: 12, border: "1px solid #334155", overflow: "hidden" }}>
+                    {r.photo_url ? (
+                      <img src={r.photo_url} style={{ width: "100%", height: 130, objectFit: "cover" }} alt="" />
+                    ) : (
+                      <div style={{ width: "100%", height: 80, background: "#0f172a", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 36, color: "#334155" }}>🚜</div>
+                    )}
+                    <div style={{ padding: "12px 14px" }}>
+                      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4, wordBreak: "break-word" }}>{r.title}</div>
+                      {(r.brand || r.model || r.year) && (
+                        <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>
+                          {[r.brand, r.model, r.year].filter(Boolean).join(" • ")}
+                        </div>
+                      )}
+                      {r.price && <div style={{ fontSize: 16, fontWeight: 700, color: "#fb923c", marginBottom: 6 }}>{r.price}</div>}
+                      {r.description && (
+                        <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.5, marginBottom: 10,
+                          display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                          {r.description}
+                        </div>
+                      )}
+                      {r.source_url && (
+                        <a href={r.source_url} target="_blank" rel="noopener noreferrer"
+                          style={{ fontSize: 11, color: "#60a5fa", display: "block", marginBottom: 10,
+                            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          🔗 {r.source_url}
+                        </a>
+                      )}
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button onClick={() => publishResult(r.id)} style={{
+                          flex: 1, padding: "9px 0", borderRadius: 8, border: "none",
+                          background: "#f97316", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600
+                        }}>✅ Publier sur la vitrine</button>
+                        <button onClick={() => rejectResult(r.id)} style={{
+                          padding: "9px 14px", borderRadius: 8, border: "1px solid #334155",
+                          background: "#1e293b", color: "#64748b", cursor: "pointer", fontSize: 13
+                        }}>❌</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
         {/* CATALOGUE TAB */}

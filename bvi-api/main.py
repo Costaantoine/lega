@@ -760,25 +760,29 @@ async def tony_dispatch(
                 except Exception as e:
                     logger.warning(f"activation_requests insert failed: {e}")
 
-        ack = classification.get("ack_message") or (
-            f"✅ Je délègue à {agent}... Résultat dans {classification.get('estimated_delay','quelques minutes')}."
-            if lang != "pt" else
-            f"✅ A delegar para {agent}... Resultado em {classification.get('estimated_delay','alguns minutos')}."
-        )
-        await ws.send_json({
-            "type": "agent_response",
-            "payload": ack,
-            "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "delegated"},
-        })
-
+        # Créer la tâche EN PREMIER pour avoir le task_id réel
         task_id = await create_task(
             session_id=session_id,
             agent_name=agent,
-            payload={"message": user_msg, "lang": lang},
+            payload={"message": user_msg, "lang": lang, "user_id": user_id},
             lang=lang,
             estimated_latency=estimated,
         )
         logger.info(f"Task created: {task_id} → {agent}")
+
+        # Ack honnête : task réellement créée, task_id inclus
+        delay_str = classification.get("estimated_delay", f"{estimated}s")
+        ack_tpl = {
+            "fr": f"✅ Demande transmise à {agent} [ref: {task_id[:8]}]\nRésultat dans environ {delay_str}.",
+            "pt": f"✅ Pedido enviado para {agent} [ref: {task_id[:8]}]\nResultado em aproximadamente {delay_str}.",
+            "en": f"✅ Request sent to {agent} [ref: {task_id[:8]}]\nResult expected in {delay_str}.",
+        }
+        ack = ack_tpl.get(lang, ack_tpl["fr"])
+        await ws.send_json({
+            "type": "agent_response",
+            "payload": ack,
+            "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "delegated", "task_id": task_id},
+        })
 
         # Sauvegarder échange dans historique local + DB
         if conv_hist is not None:
@@ -819,18 +823,54 @@ def load_kb(path: str = "/app/knowledge_base.json", max_items: int = 8) -> str:
         return f"Contexte indisponible: {e}"
 
 
+async def _store_search_results(user_id: str, task_id: str, listings_web: list) -> None:
+    """Stocke les résultats de recherche web dans search_results."""
+    if not listings_web:
+        return
+    try:
+        conn = await db_connect()
+        for item in listings_web:
+            await conn.execute(
+                """INSERT INTO search_results
+                   (task_id, user_id, title, price, source_url, description, status)
+                   VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+                   ON CONFLICT DO NOTHING""",
+                task_id, user_id,
+                (item.get("title") or "")[:255],
+                (item.get("content") or item.get("price") or "")[:100],
+                (item.get("url") or "")[:500],
+                (item.get("content") or "")[:500],
+            )
+        await conn.close()
+    except Exception as e:
+        logger.warning(f"store_search_results failed: {e}")
+
+
 async def run_max_search(payload: dict, lang: str) -> str:
     """Max Search: recherche machines TP (gemma4:e2b)."""
     query = payload.get("message", "")
+    user_id = payload.get("user_id", "")
+    task_id = payload.get("task_id", str(uuid.uuid4()))
     context = load_kb()
     lang_instr = "Français." if lang == "fr" else ("Português europeu (PT-PT)." if lang == "pt" else "English.")
 
-    # Recherche sur tob.pt en parallèle
+    # Recherche sur sources partenaires
     listings = []
     try:
         listings = await web_utils.search_smart(query, max_results=5)
     except Exception:
         pass
+
+    # Recherche SearXNG pour obtenir des URLs réelles
+    listings_web = []
+    try:
+        listings_web = await web_utils.search_web(query, max_results=8, lang=lang)
+    except Exception:
+        pass
+
+    # Stocker les résultats SearXNG en DB pour le panneau "Annonces trouvées"
+    if user_id and listings_web:
+        asyncio.create_task(_store_search_results(user_id, task_id, listings_web))
 
     listings_text = "\n".join([f"- {l['title']} | {l.get('price','N/A')}" for l in listings]) if listings else "Aucune annonce directe trouvée."
 
@@ -2143,6 +2183,33 @@ async def startup():
         logger.info("conversation_history table ready")
     except Exception as e:
         logger.warning(f"conversation_history table init failed: {e}")
+    try:
+        conn = await db_connect()
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS search_results (
+                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                task_id     UUID,
+                user_id     TEXT,
+                title       TEXT,
+                brand       TEXT,
+                model       TEXT,
+                year        INTEGER,
+                price       TEXT,
+                description TEXT,
+                photo_url   TEXT,
+                source_url  TEXT,
+                status      TEXT DEFAULT 'pending'
+                            CHECK (status IN ('pending','selected','published','rejected')),
+                created_at  TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_search_results_status ON search_results(status, created_at DESC)"
+        )
+        await conn.close()
+        logger.info("search_results table ready")
+    except Exception as e:
+        logger.warning(f"search_results table init failed: {e}")
     logger.info("LEGA API v1.0 started — Tony + Worker + Trial cron + Morning brief + RAG online")
 
 
@@ -2676,6 +2743,88 @@ async def patch_product_status(product_id: int, request: dict, _: str = Depends(
         return {"status": "ok", "id": row["id"], "new_status": row["status"]}
     except HTTPException:
         raise
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ── Search Results — panneau "Annonces trouvées" ──────────────────────────────
+
+@app.get("/api/search-results")
+async def get_search_results(limit: int = 50):
+    """Retourne toutes les annonces trouvées par max_search (pending + selected)."""
+    try:
+        conn = await db_connect()
+        rows = await conn.fetch(
+            """SELECT id, task_id, user_id, title, brand, model, year, price,
+                      description, photo_url, source_url, status, created_at
+               FROM search_results
+               WHERE status IN ('pending','selected')
+               ORDER BY created_at DESC LIMIT $1""",
+            limit,
+        )
+        await conn.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/search-results/{result_id}/publish")
+async def publish_search_result(result_id: str):
+    """Publie une annonce search_result → crée un produit dans la vitrine locale."""
+    try:
+        conn = await db_connect()
+        row = await conn.fetchrow(
+            "SELECT * FROM search_results WHERE id=$1 AND status IN ('pending','selected')",
+            result_id,
+        )
+        if not row:
+            await conn.close()
+            raise HTTPException(404, "Annonce non trouvée ou déjà traitée")
+
+        title = row["title"] or "Machine TP"
+        price_str = row["price"] or ""
+        price_val = 0.0
+        import re as _re
+        nums = _re.findall(r"[\d\s]+", price_str.replace("\u202f", "").replace("\xa0", ""))
+        if nums:
+            try:
+                price_val = float("".join(nums[0].split()))
+            except Exception:
+                price_val = 0.0
+
+        prod_row = await conn.fetchrow(
+            """INSERT INTO products
+               (title, description, price, currency, category, attributes, images, status, created_at)
+               VALUES ($1, $2, $3, 'EUR', 'tp', '{}', '[]', 'published', NOW())
+               RETURNING id""",
+            title,
+            row["description"] or "",
+            price_val,
+        )
+        new_prod_id = prod_row["id"]
+
+        await conn.execute(
+            "UPDATE search_results SET status='published' WHERE id=$1", result_id
+        )
+        await conn.close()
+        return {"status": "ok", "product_id": new_prod_id, "message": "✅ Annonce publiée sur la vitrine."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"publish_search_result error: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/search-results/{result_id}/reject")
+async def reject_search_result(result_id: str):
+    """Rejette une annonce — elle disparaît du panneau."""
+    try:
+        conn = await db_connect()
+        await conn.execute(
+            "UPDATE search_results SET status='rejected' WHERE id=$1", result_id
+        )
+        await conn.close()
+        return {"status": "ok", "message": "Annonce rejetée."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
