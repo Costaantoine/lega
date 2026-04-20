@@ -3,7 +3,36 @@
 
 ---
 
-## 🗓 Dernière mise à jour : 2026-04-20 (~07h36 UTC)
+## 🗓 Dernière mise à jour : 2026-04-20 (~11h30 UTC)
+
+---
+
+## ✅ FAIT — Session 15 (2026-04-20)
+
+### Fix pipeline max_search → search_results (commit `6096f4c`)
+
+**Problèmes identifiés et corrigés :**
+- **SearXNG** : engines par défaut (startpage/mojeek) retournaient 0 résultats → bing activé (`settings.yml`)
+- **web_utils.py** : `search_web()` force maintenant `engines=bing,startpage,mojeek`
+- **Worker main.py** : ne gérait pas `___SEARCH_COUNT:N___` → strip du marker + notification Tony + `search_results_ready`
+- **Tasks stuck** : 3 tasks "running" depuis restart resetées à "failed"
+
+**Tests validés :**
+- `search_web('pelleteuse')` → 5 résultats bing ✅
+- `_parse_and_store_results()` → 3 annonces stockées en DB ✅
+- `GET /api/search-results` → liste les pending ✅
+- `POST /api/search-results/{id}/publish` → produit_id=5 créé dans products ✅
+- `POST /api/search-results/{id}/reject` → disparaît du panel ✅
+
+**Flux complet après fix :**
+1. User demande "trouve pelleteuse" → max_search dispatché
+2. max_search appelle search_web (bing) + LLM gemma4:e2b
+3. `_parse_and_store_results` stocke les annonces en DB
+4. Worker strip `___SEARCH_COUNT:N___` du texte
+5. Tony envoie "✅ Max a trouvé N annonce(s). Disponibles dans l'onglet 📋 Annonces."
+6. WS `search_results_ready` → frontend refresh panel Annonces
+7. Bouton ✅ Publier → POST publish → produit dans vitrine
+8. Bouton ❌ Rejeter → POST reject → disparaît
 
 ---
 
