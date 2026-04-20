@@ -3,7 +3,8 @@ import { useState, useEffect, useRef } from 'react';
 
 const API_WS = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '').replace('http', 'ws') || 'ws://76.13.141.221:8002';
 
-interface Msg { role: 'user' | 'assistant'; text: string; meta?: string }
+interface Msg { role: 'user' | 'assistant'; text: string; meta?: string; confirmDraft?: string }
+type ThinkingStatus = 'waiting' | 'thinking' | 'done' | null;
 
 const card: React.CSSProperties = {
   background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: 16,
@@ -15,6 +16,9 @@ export default function AdminChatPage() {
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
   const [lang, setLang] = useState<'fr' | 'pt' | 'en'>('fr');
+  const [thinkingStatus, setThinkingStatus] = useState<ThinkingStatus>(null);
+  const [thinkingText, setThinkingText] = useState('Tony reçoit votre message...');
+  const [agentBadge, setAgentBadge] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -31,9 +35,20 @@ export default function AdminChatPage() {
     socket.onmessage = (e) => {
       try {
         const d = JSON.parse(e.data);
+        if (d.type === 'thinking') {
+          setThinkingStatus('thinking');
+          setThinkingText(d.payload || 'Je traite votre demande...');
+          setAgentBadge(d.metadata?.agent || null);
+          return;
+        }
+        if (d.type === 'agent_response' || d.type === 'task_result') {
+          setThinkingStatus('done');
+          setTimeout(() => setThinkingStatus(null), 350);
+        }
         const text = d.payload || d.direct_response || d.message || JSON.stringify(d);
         const meta = d.metadata ? `${d.metadata.intent || ''} ${d.metadata.agent || ''} ${d.metadata.status || ''}`.trim() : '';
-        setMsgs(prev => [...prev, { role: 'assistant', text, meta }]);
+        const confirmDraft = d.metadata?.confirm_required ? d.metadata.draft_id : undefined;
+        setMsgs(prev => [...prev, { role: 'assistant', text, meta, confirmDraft }]);
       } catch {}
     };
 
@@ -48,11 +63,21 @@ export default function AdminChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [msgs]);
 
+  const confirmSend = (draftId: string) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ payload: 'CONFIRM_SEND', draft_id: draftId }));
+    setMsgs(prev => prev.map(m => m.confirmDraft === draftId ? { ...m, confirmDraft: undefined } : m));
+    setMsgs(prev => [...prev, { role: 'user', text: '✉️ Envoi confirmé' }]);
+  };
+
   const send = () => {
     if (!input.trim() || !ws || ws.readyState !== WebSocket.OPEN) return;
     setMsgs(prev => [...prev, { role: 'user', text: input }]);
     ws.send(JSON.stringify({ payload: input, lang }));
     setInput('');
+    setThinkingStatus('waiting');
+    setThinkingText('Tony reçoit votre message...');
+    setAgentBadge(null);
     inputRef.current?.focus();
   };
 
@@ -102,6 +127,13 @@ export default function AdminChatPage() {
             }}>
               {m.text}
             </div>
+            {m.confirmDraft && (
+              <button onClick={() => confirmSend(m.confirmDraft!)}
+                style={{ marginTop: 8, padding: '6px 16px', background: '#16a34a', color: '#fff',
+                  border: 'none', borderRadius: 6, fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
+                ✉️ Confirmer l&apos;envoi
+              </button>
+            )}
             {m.meta && m.meta !== 'system' && (
               <div style={{ fontSize: 10, color: '#475569', marginTop: 3, paddingInline: 4 }}>{m.meta}</div>
             )}
@@ -126,6 +158,40 @@ export default function AdminChatPage() {
           ➤
         </button>
       </div>
+
+      {/* ── Indicateur "Tony travaille" ── */}
+      <style>{`
+        @keyframes bvi-dot { 0%,80%,100%{opacity:.2;transform:scale(.8)} 40%{opacity:1;transform:scale(1)} }
+        @keyframes bvi-spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+        @keyframes bvi-fadeout { from{opacity:1;transform:translateY(0)} to{opacity:0;transform:translateY(4px)} }
+        .bvi-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#e8641e;margin:0 3px;animation:bvi-dot 1.4s ease-in-out infinite}
+        .bvi-dot:nth-child(2){animation-delay:.2s}
+        .bvi-dot:nth-child(3){animation-delay:.4s}
+        .bvi-spin{display:inline-block;animation:bvi-spin 1s linear infinite}
+        .bvi-fadeout{animation:bvi-fadeout 350ms ease forwards}
+      `}</style>
+      {thinkingStatus && (
+        <div className={thinkingStatus === 'done' ? 'bvi-fadeout' : ''}
+          style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 12px', marginTop:6,
+            background:'rgba(30,41,59,0.8)', borderRadius:8, border:'1px solid #334155',
+            fontSize:12, color:'#94a3b8' }}>
+          {thinkingStatus === 'waiting' ? (
+            <span style={{display:'flex',alignItems:'center',gap:6}}>
+              <span className="bvi-dot"/><span className="bvi-dot"/><span className="bvi-dot"/>
+              <span style={{marginLeft:4}}>Tony reçoit votre message...</span>
+            </span>
+          ) : (
+            <span style={{display:'flex',alignItems:'center',gap:8}}>
+              <span className="bvi-spin" style={{fontSize:14}}>⚙️</span>
+              <span>{thinkingText}</span>
+              {agentBadge && (
+                <span style={{background:'#1e3a5f',color:'#60a5fa',padding:'1px 7px',
+                  borderRadius:4,fontSize:11,fontWeight:600}}>→ {agentBadge}</span>
+              )}
+            </span>
+          )}
+        </div>
+      )}
 
       <p style={{ fontSize: 11, color: '#475569', marginTop: 10 }}>
         💡 Commandes possibles : changer slogan / couleur / téléphone / adresse / activer-désactiver sections du site vitrine.

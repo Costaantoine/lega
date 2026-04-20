@@ -643,6 +643,10 @@ async def tony_dispatch(
         # Détecter multi-action trigger
         msg_low = user_msg.lower()
         is_multi_trigger = any(kw in msg_low for kw in _MULTI_ACTION_KW)
+        # Si "fais les deux" sans pending_actions, utiliser les 2 derniers agents récents
+        if is_multi_trigger and not ctx.get("pending_actions") and len(ctx.get("recent_agents", [])) >= 2:
+            ctx["pending_actions"] = list(ctx["recent_agents"])
+            ctx["recent_agents"] = []
         if is_multi_trigger and ctx.get("pending_actions"):
             pending = ctx.pop("pending_actions")
             lang = ctx.get("user_lang", "fr")
@@ -775,6 +779,20 @@ async def tony_dispatch(
             estimated_latency=estimated,
         )
         logger.info(f"Task created: {task_id} → {agent}")
+
+        # Sauvegarder échange dans historique local + DB
+        if conv_hist is not None:
+            conv_hist.append({"role": "assistant", "content": ack})
+            if len(conv_hist) > 20:
+                conv_hist[:] = conv_hist[-20:]
+        asyncio.create_task(_save_conv_history(user_id, user_msg, ack, lang))
+
+        # Mémoriser les 2 derniers agents pour "fais les deux"
+        recent = ctx.setdefault("recent_agents", [])
+        if not recent or recent[-1] != agent:
+            recent.append(agent)
+        if len(recent) > 2:
+            ctx["recent_agents"] = recent[-2:]
 
     except Exception as e:
         logger.error(f"tony_dispatch error [{session_id[:8]}]: {e}")
@@ -1781,7 +1799,7 @@ async def db_connect():
 
 # ── Conversation memory helpers ───────────────────────────────────────────────
 
-def _build_history_str(history: list, max_turns: int = 3) -> str:
+def _build_history_str(history: list, max_turns: int = 6) -> str:
     if not history:
         return ""
     lines = []
