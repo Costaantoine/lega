@@ -3,7 +3,22 @@
 
 ---
 
-## 🗓 Dernière mise à jour : 2026-04-19 (~16h30 UTC)
+## 🗓 Dernière mise à jour : 2026-04-20 (~06h00 UTC)
+
+---
+
+## ✅ FAIT — Session 13 (2026-04-20)
+
+### Mémoire conversationnelle Tony — 6 étapes complètes
+
+- **Étape 1** : `conversation_history` par session WS, chargée depuis DB à la connexion, user message ajouté à chaque échange (ligne 2247)
+- **Étape 2** : `_build_history_str(max_turns=6)` → 6 derniers échanges injectés dans `tony_classify` et `handle_general_chat`
+- **Étape 3** : `session_context` avec `pending_actions`, `last_agent`, `last_intent`, `user_lang` — mis à jour à chaque dispatch
+- **Étape 4** : Multi-action "fais les deux" / "suite" → dispatche les 2 derniers `recent_agents` en séquence si `pending_actions` vide
+- **Étape 5** : `no_greet` conditionné sur `if history` → pas de "Bonjour" après le 1er message (dans classify + general_chat)
+- **Étape 6** : `_save_conv_history` appelé aussi pour agents spécialisés (après `create_task`) + `conv_hist.append(ack)`
+
+### Commit : `810f884` — feat: Tony mémoire conversationnelle + multi-action
 
 ---
 
