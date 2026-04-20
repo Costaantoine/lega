@@ -823,27 +823,91 @@ def load_kb(path: str = "/app/knowledge_base.json", max_items: int = 8) -> str:
         return f"Contexte indisponible: {e}"
 
 
-async def _store_search_results(user_id: str, task_id: str, listings_web: list) -> None:
-    """Stocke les résultats de recherche web dans search_results."""
-    if not listings_web:
-        return
+async def _parse_and_store_results(task_id: str, user_id: str, llm_response: str, listings_web: list, lang: str) -> int:
+    """Parse réponse LLM via gemma2:2b → annonces structurées → search_results. Retourne le count."""
+    stored = 0
+    parse_prompt = f"""Analyse cette réponse de recherche de machines et extrait TOUTES les annonces mentionnées.
+Réponds UNIQUEMENT avec un tableau JSON valide, rien d'autre.
+Format exact:
+[{{"title":"nom complet","brand":"marque","model":"modèle","year":2016,"price":"15000€","description":"description courte 1-2 phrases","photo_url":null,"source_url":null}}]
+Si aucune annonce trouvée: []
+
+Réponse à parser:
+{llm_response[:2500]}
+
+JSON:"""
+    parsed = []
     try:
-        conn = await db_connect()
-        for item in listings_web:
-            await conn.execute(
-                """INSERT INTO search_results
-                   (task_id, user_id, title, price, source_url, description, status)
-                   VALUES ($1, $2, $3, $4, $5, $6, 'pending')
-                   ON CONFLICT DO NOTHING""",
-                task_id, user_id,
-                (item.get("title") or "")[:255],
-                (item.get("content") or item.get("price") or "")[:100],
-                (item.get("url") or "")[:500],
-                (item.get("content") or "")[:500],
-            )
-        await conn.close()
-    except Exception as e:
-        logger.warning(f"store_search_results failed: {e}")
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=5.0)) as c:
+            res = await c.post(f"{OLLAMA_URL}/api/chat", json={
+                "model": TONY_MODEL,
+                "messages": [{"role": "user", "content": parse_prompt}],
+                "stream": False, "think": False,
+                "options": {"temperature": 0.1, "num_predict": 700},
+            })
+            raw = res.json().get("message", {}).get("content", "")
+            s, e = raw.find("["), raw.rfind("]") + 1
+            if s >= 0 and e > s:
+                parsed = json.loads(raw[s:e])
+                if not isinstance(parsed, list):
+                    parsed = []
+    except Exception as ex:
+        logger.warning(f"LLM parse search_results failed: {ex}")
+
+    if parsed:
+        try:
+            conn = await db_connect()
+            for a in parsed:
+                if not a.get("title"):
+                    continue
+                year_val = None
+                try:
+                    year_val = int(a["year"]) if a.get("year") else None
+                except Exception:
+                    pass
+                await conn.execute(
+                    """INSERT INTO search_results
+                       (task_id, user_id, title, brand, model, year, price, description, photo_url, source_url)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
+                    task_id, user_id or "antoine",
+                    str(a.get("title") or "")[:255],
+                    str(a.get("brand") or "")[:100] or None,
+                    str(a.get("model") or "")[:100] or None,
+                    year_val,
+                    str(a.get("price") or "")[:100] or None,
+                    str(a.get("description") or "")[:500] or None,
+                    str(a.get("photo_url") or "")[:500] or None,
+                    str(a.get("source_url") or "")[:500] or None,
+                )
+                stored += 1
+            await conn.close()
+        except Exception as ex:
+            logger.warning(f"store parsed annonces failed: {ex}")
+
+    # Fallback: résultats SearXNG bruts si LLM n'a rien parsé
+    if stored == 0 and listings_web:
+        try:
+            conn = await db_connect()
+            for item in listings_web[:5]:
+                title = (item.get("title") or "")[:255]
+                if not title:
+                    continue
+                await conn.execute(
+                    """INSERT INTO search_results
+                       (task_id, user_id, title, price, source_url, description)
+                       VALUES ($1,$2,$3,$4,$5,$6)""",
+                    task_id, user_id or "antoine",
+                    title,
+                    (item.get("content") or "")[:100] or None,
+                    (item.get("url") or "")[:500] or None,
+                    (item.get("content") or "")[:500] or None,
+                )
+                stored += 1
+            await conn.close()
+        except Exception as ex:
+            logger.warning(f"store raw listings fallback failed: {ex}")
+
+    return stored
 
 
 async def run_max_search(payload: dict, lang: str) -> str:
@@ -854,23 +918,17 @@ async def run_max_search(payload: dict, lang: str) -> str:
     context = load_kb()
     lang_instr = "Français." if lang == "fr" else ("Português europeu (PT-PT)." if lang == "pt" else "English.")
 
-    # Recherche sur sources partenaires
     listings = []
     try:
         listings = await web_utils.search_smart(query, max_results=5)
     except Exception:
         pass
 
-    # Recherche SearXNG pour obtenir des URLs réelles
     listings_web = []
     try:
         listings_web = await web_utils.search_web(query, max_results=8, lang=lang)
     except Exception:
         pass
-
-    # Stocker les résultats SearXNG en DB pour le panneau "Annonces trouvées"
-    if user_id and listings_web:
-        asyncio.create_task(_store_search_results(user_id, task_id, listings_web))
 
     listings_text = "\n".join([f"- {l['title']} | {l.get('price','N/A')}" for l in listings]) if listings else "Aucune annonce directe trouvée."
 
@@ -906,7 +964,14 @@ Génère une réponse structurée:
                     "options": {"temperature": 0.3, "num_predict": 800},
                 },
             )
-            return res.json().get("message", {}).get("content", "Résultat indisponible.")
+            result_text = res.json().get("message", {}).get("content", "Résultat indisponible.")
+
+        # Parser et stocker les annonces APRÈS la réponse LLM
+        if user_id:
+            stored_count = await _parse_and_store_results(task_id, user_id, result_text, listings_web, lang)
+            if stored_count > 0:
+                return f"{result_text}\n___SEARCH_COUNT:{stored_count}___"
+        return result_text
     except Exception as e:
         logger.error(f"Max Search error: {e}")
         return f"⚠️ Erreur Max Search: {str(e)[:100]}"
@@ -1881,12 +1946,14 @@ async def _save_conv_history(user_id: str, user_msg: str, assistant_msg: str, la
 
 async def create_task(session_id: str, agent_name: str, payload: dict, lang: str, estimated_latency: int) -> str:
     task_id = str(uuid.uuid4())
+    # Injecter task_id dans le payload pour que les agents puissent le référencer
+    payload_stored = {**payload, "task_id": task_id}
     conn = await db_connect()
     try:
         await conn.execute(
             """INSERT INTO tasks (task_id, session_id, agent_name, payload, status, language, estimated_latency_sec)
                VALUES ($1, $2, $3, $4, 'pending', $5, $6)""",
-            task_id, session_id, agent_name, json.dumps(payload), lang, estimated_latency,
+            task_id, session_id, agent_name, json.dumps(payload_stored), lang, estimated_latency,
         )
     finally:
         await conn.close()
@@ -1951,6 +2018,13 @@ async def task_worker():
                             extra_meta = {"confirm_required": True, "draft_id": draft_match.group(1)}
                             result = result[:draft_match.start()].rstrip()
 
+                        # Détecter résultats max_search stockés
+                        search_count = 0
+                        search_match = re.search(r'___SEARCH_COUNT:(\d+)___', result)
+                        if search_match:
+                            search_count = int(search_match.group(1))
+                            result = result[:search_match.start()].rstrip()
+
                         await update_task(task_id, "done", {"text": result})
 
                         # Push result via WebSocket if client still connected
@@ -1967,6 +2041,15 @@ async def task_worker():
                                         **extra_meta,
                                     },
                                 })
+                                # Notification Tony + refresh panel si annonces trouvées
+                                if search_count > 0:
+                                    tony_notif = {
+                                        "fr": f"✅ Max a trouvé {search_count} annonce(s).\nDisponibles dans l'onglet 📋 Annonces.",
+                                        "pt": f"✅ Max encontrou {search_count} anúncio(s).\nDisponíveis no separador 📋 Anúncios.",
+                                        "en": f"✅ Max found {search_count} listing(s).\nAvailable in the 📋 Listings tab.",
+                                    }.get(lang, f"✅ Max a trouvé {search_count} annonce(s).\nDisponibles dans l'onglet 📋 Annonces.")
+                                    await ws.send_json({"type": "agent_response", "payload": tony_notif, "metadata": {"agent": "tony", "done": True}})
+                                    await ws.send_json({"type": "search_results_ready", "payload": search_count})
                             except Exception as e:
                                 logger.warning(f"WS push failed: {e}")
                     except Exception as e:

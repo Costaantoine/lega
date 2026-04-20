@@ -49,7 +49,9 @@ engines:
 
   - name: bing
     engine: bing
-    disabled: true
+    categories: general
+    disabled: false
+    weight: 3
 
   - name: brave
     engine: brave

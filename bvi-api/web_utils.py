@@ -21,6 +21,7 @@ async def search_web(query: str, max_results: int = 5, lang: str = "fr") -> List
             "format": "json",
             "language": lang,
             "categories": "general",
+            "engines": "bing,startpage,mojeek",
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{SEARXNG_URL}/search", params=params)
