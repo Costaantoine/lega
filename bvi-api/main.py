@@ -41,8 +41,17 @@ SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
-# Agents nécessitant un abonnement
-PREMIUM_AGENTS = {"max_search", "lea_extract", "visa_vision", "logistique", "comptable", "traducteur", "demandes_prix"}
+# Agents toujours gratuits (jamais verrouillés)
+ALWAYS_FREE_AGENTS = {"tony_interface", "standardiste", "lea", "vitrine_bot", "agenda"}
+
+# Agents verrouillés par défaut — activation manuelle via dashboard (code 191070)
+PREMIUM_AGENTS = {
+    "max_search", "sam_comms", "lea_extract", "visa_vision",
+    "logistique", "comptable", "traducteur", "demandes_prix", "documentation",
+}
+
+# Code d'activation client (saisi dans le dashboard par l'admin)
+ACTIVATION_CODE = "191070"
 
 # Mode gestion site : "agent" (automatique) ou "manual" (dashboard)
 SITE_MANAGEMENT_MODE = os.getenv("SITE_MANAGEMENT_MODE", "manual")
@@ -301,7 +310,7 @@ def detect_language(text: str, client_lang: str = None) -> str:
 
 
 async def tony_classify(message: str, client_lang: str = None, history: list = None) -> dict:
-    """Appelle Tony (gemma4:e2b) pour classifier l'intention."""
+    """Appelle Tony (gemma2:2b via TONY_MODEL) pour classifier l'intention."""
     forced_lang = detect_language(message, client_lang)
     lang_hint = {
         "pt": "LANGUAGE=Portuguese (PT-PT). All text fields must be in Portuguese.",
@@ -312,11 +321,11 @@ async def tony_classify(message: str, client_lang: str = None, history: list = N
     no_greet = "\nIMPORTANT: L'utilisateur a déjà été accueilli. Ne jamais recommencer par Bonjour dans direct_response." if history else ""
     prompt = f"{TONY_SYSTEM}\n\n{lang_hint}\nForce lang=\"{forced_lang}\" in your JSON.{no_greet}\n\n{history_str}MESSAGE: {message}\n\nJSON:"
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(50.0, connect=5.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
             res = await client.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
-                    "model": AGENT_MODEL,
+                    "model": TONY_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False, "think": False,
                     "options": {"temperature": 0.1, "num_predict": 256},
@@ -427,6 +436,7 @@ async def tony_classify(message: str, client_lang: str = None, history: list = N
                       "bateau ro","acheminer","expédier","convoi","logistique","shipping cost",
                       "custo transporte","transporte de","enviar máquina"}
     _comptable_kw  = {"génère un devis","générer un devis","faire un devis","créer un devis",
+                      "fais un devis","fais moi un devis","make a quote","faire une facture",
                       "facture","bon de commande","tva","avoir","relance paiement",
                       "facturation","invoice","orçamento","fatura","nota fiscal"}
     _demandes_kw   = {"demande de prix","prix fournisseur","tarif fournisseur",
@@ -444,6 +454,12 @@ async def tony_classify(message: str, client_lang: str = None, history: list = N
         return {"intent":"demandes_prix","lang":forced_lang,"agent":"demandes_prix",
                 "ack_message":{"fr":"Je rédige la demande de prix...","pt":"A redigir o pedido de preço...","en":"Writing price request..."}.get(forced_lang,"Je rédige..."),
                 "estimated_delay":"15s","direct_response":None}
+    _sam_kw = {"envoie un email","envoyer un email","send an email","envia um email",
+               "email à","mail à","envoie un mail","rédige un email","rédiger un email"}
+    if any(w in m_low for w in _sam_kw):
+        return {"intent":"sam_comms","lang":forced_lang,"agent":"sam_comms",
+                "ack_message":{"fr":"Je prépare votre email...","pt":"A preparar o email...","en":"Preparing your email..."}.get(forced_lang,"Je prépare votre email..."),
+                "estimated_delay":"20s","direct_response":None}
     _traducteur_kw = {"traduis","traduire","traduza","tradução","translation","translate","traducir",
                       "en portugais","en français","en anglais","in portuguese","in french","in english",
                       "em português","em francês"}
@@ -611,18 +627,21 @@ async def handle_general_chat(
         f"{_TONY_ENRICHED_CHAT.format(message=message, lang=lang)}"
     )
     try:
-        response = await _ollama_quick(AGENT_MODEL, prompt, 200, 40.0)
+        response = await _ollama_quick(AGENT_MODEL, prompt, 200, 15.0)
         if not response:
             response = _fallback.get(lang, _fallback["fr"])
     except Exception as e:
         logger.warning(f"general_chat failed [{session_id[:8]}]: {type(e).__name__} {e}")
         response = classification.get("direct_response") or _fallback.get(lang, _fallback["fr"])
 
-    await ws.send_json({
-        "type": "agent_response",
-        "payload": response,
-        "metadata": {"intent": "general_chat", "lang": lang, "agent": "tony_interface"},
-    })
+    try:
+        await ws.send_json({
+            "type": "agent_response",
+            "payload": response,
+            "metadata": {"intent": "general_chat", "lang": lang, "agent": "tony_interface"},
+        })
+    except Exception:
+        pass
     return response
 
 
@@ -696,69 +715,58 @@ async def tony_dispatch(
             })
             return
 
-        if agent in PREMIUM_AGENTS:
+        if agent in PREMIUM_AGENTS and not is_admin:
             sub_status = await check_subscription(user_id, agent)
             if sub_status not in ("active", "trial"):
-                is_renewal = sub_status == "expired"
-                await activate_trial(user_id, agent)
-                logger.info(f"Trial activé: user {user_id[:8]} → {agent}")
-                if lang == "pt":
-                    upsell = (
-                        f"🎯 O agente <b>{agent}</b> é premium.\n\n"
-                        f"✅ Ativei um <b>trial gratuito de 24h</b> para si!\n"
-                        f"A processar o seu pedido agora...\n\n"
-                        f"💡 Para acesso permanente: <b>49€/mês</b>. Contacte-nos."
-                    ) if not is_renewal else (
-                        f"🔄 O seu trial anterior expirou.\n"
-                        f"✅ Novo trial de 24h ativado! A processar...\n\n"
-                        f"💡 Acesso permanente: <b>49€/mês</b>."
-                    )
-                elif lang == "en":
-                    upsell = (
-                        f"🎯 The <b>{agent}</b> agent is premium.\n\n"
-                        f"✅ I've activated a <b>free 24h trial</b> for you!\n"
-                        f"Processing your request now...\n\n"
-                        f"💡 Full access: <b>€49/month</b>. Contact us."
-                    ) if not is_renewal else (
-                        f"🔄 Your previous trial has expired.\n"
-                        f"✅ New 24h trial activated! Processing...\n\n"
-                        f"💡 Full access: <b>€49/month</b>."
-                    )
-                else:
-                    upsell = (
-                        f"🎯 L'agent <b>{agent}</b> est premium.\n\n"
-                        f"✅ J'active un <b>trial gratuit 24h</b> pour vous !\n"
-                        f"Je traite votre demande maintenant...\n\n"
-                        f"💡 Accès permanent : <b>49€/mois</b>. Contactez-nous."
-                    ) if not is_renewal else (
-                        f"🔄 Votre trial précédent a expiré.\n"
-                        f"✅ Nouveau trial 24h activé ! Je traite votre demande...\n\n"
-                        f"💡 Accès permanent : <b>49€/mois</b>."
-                    )
+                # Agent verrouillé — demande d'activation transmise à l'admin
+                locked_msg = {
+                    "fr": (
+                        f"🔒 L'agent <b>{agent}</b> nécessite une activation.\n\n"
+                        f"Votre demande a été transmise à notre équipe.\n"
+                        f"Vous serez notifié dès que l'accès est accordé.\n\n"
+                        f"💡 Contactez-nous pour un accès immédiat."
+                    ),
+                    "pt": (
+                        f"🔒 O agente <b>{agent}</b> requer ativação.\n\n"
+                        f"O seu pedido foi transmitido à nossa equipa.\n"
+                        f"Será notificado assim que o acesso for concedido.\n\n"
+                        f"💡 Contacte-nos para acesso imediato."
+                    ),
+                    "en": (
+                        f"🔒 The <b>{agent}</b> agent requires activation.\n\n"
+                        f"Your request has been forwarded to our team.\n"
+                        f"You'll be notified once access is granted.\n\n"
+                        f"💡 Contact us for immediate access."
+                    ),
+                }
                 await ws.send_json({
                     "type": "agent_response",
-                    "payload": upsell,
-                    "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "trial_activated"},
+                    "payload": locked_msg.get(lang, locked_msg["fr"]),
+                    "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "locked"},
                 })
-                tg_msg = (
-                    f"🆕 <b>Trial activé</b>\n"
-                    f"Agent : <code>{agent}</code>\n"
-                    f"Session : <code>{session_id[:12]}</code>\n"
-                    f"Message : {user_msg[:200]}\n"
-                    f"Langue : {lang}\n"
-                    f"Renouvellement : {'oui' if is_renewal else 'non'}"
-                )
-                asyncio.create_task(notify_telegram(tg_msg))
+                # Enregistrer demande d'activation (éviter les doublons)
                 try:
                     conn_act = await db_connect()
-                    await conn_act.execute(
-                        """INSERT INTO activation_requests (session_id, agent_name, user_message, status)
-                           VALUES ($1, $2, $3, 'approved')""",
-                        session_id, agent, user_msg[:500],
+                    existing = await conn_act.fetchrow(
+                        "SELECT id FROM activation_requests WHERE session_id=$1 AND agent_name=$2 AND status='pending'",
+                        session_id, agent,
                     )
+                    if not existing:
+                        await conn_act.execute(
+                            "INSERT INTO activation_requests (session_id, agent_name, user_message, status) VALUES ($1, $2, $3, 'pending')",
+                            session_id, agent, user_msg[:500],
+                        )
                     await conn_act.close()
                 except Exception as e:
                     logger.warning(f"activation_requests insert failed: {e}")
+                asyncio.create_task(notify_telegram(
+                    f"🔐 <b>Activation demandée</b>\n"
+                    f"Agent : <code>{agent}</code>\n"
+                    f"Session : <code>{session_id[:12]}</code>\n"
+                    f"Message : {user_msg[:200]}\n"
+                    f"Langue : {lang}"
+                ))
+                return
 
         # Créer la tâche EN PREMIER pour avoir le task_id réel
         task_id = await create_task(
@@ -918,15 +926,28 @@ async def run_max_search(payload: dict, lang: str) -> str:
     context = load_kb()
     lang_instr = "Français." if lang == "fr" else ("Português europeu (PT-PT)." if lang == "pt" else "English.")
 
+    # Nettoyer la query pour SearXNG : retirer verbes de recherche en tête + limiter à 80 chars
+    import re as _re
+    q_search = _re.sub(r'^(?:recherche[rz]?|trouve[rz]?|cherche[rz]?|find|search|pesquisa[rz]?)\s+',
+                       '', query, flags=_re.IGNORECASE).strip()[:80]
+    _machine_terms = {'pelleteuse','pelle','komatsu','caterpillar','volvo','jcb','hitachi',
+                      'excavateur','chargeuse','bulldozer','compacteur','tombereau','grue'}
+    if any(t in q_search.lower() for t in _machine_terms) and 'occasion' not in q_search.lower():
+        q_search += ' occasion vente'
+    # Désambiguïsation : brand+model en tête, puis type machine, évite jardinage
+    if any(t in q_search.lower() for t in _machine_terms):
+        if 'engin' not in q_search.lower() and 'tp' not in q_search.lower():
+            q_search += ' excavateur engin TP annonce avec photo'
+
     listings = []
     try:
-        listings = await web_utils.search_smart(query, max_results=5)
+        listings = await web_utils.search_smart(q_search, max_results=5)
     except Exception:
         pass
 
     listings_web = []
     try:
-        listings_web = await web_utils.search_web(query, max_results=8, lang=lang)
+        listings_web = await web_utils.search_web(q_search, max_results=8, lang=lang)
     except Exception:
         pass
 
@@ -1724,11 +1745,19 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
                         "lang": lang,
                     })
 
+        final_text = re.sub(r'\s+', ' ', full_text).strip()
         await websocket.send_json({
             "type": "agent_response",
-            "payload": re.sub(r'\s+', ' ', full_text).strip(),
+            "payload": final_text,
             "metadata": {"agent": "lea", "canal": canal, "lang": lang, "model": model},
         })
+        # Signaler escalade vers Tony si Léa transfère
+        _ESCALATE_KW = {
+            "je vous passe tony", "je passe à tony", "je transfère", "je vous transfère",
+            "vou transferir", "vou passar para o tony", "i'll transfer", "passing to tony",
+        }
+        return any(w in final_text.lower() for w in _ESCALATE_KW)
+
     except Exception as e:
         logger.error(f"lea_streaming error ({canal}): {e}")
         fb = {
@@ -1741,6 +1770,7 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
             "payload": fb.get(lang, fb["fr"]),
             "metadata": {"agent": "lea", "canal": canal, "lang": lang},
         })
+        return False
 
 
 async def run_site_manager(payload: dict, lang: str) -> str:
@@ -2391,23 +2421,19 @@ async def websocket_endpoint(ws: WebSocket, token: str = None):
             preferred_agent = payload_raw.get("preferred_agent")
 
             # Routing agent Léa unifié (web → gemma2:2b, voice → gemma4:e2b)
-            if preferred_agent == "lea":
-                canal = payload_raw.get("canal", "web")
+            if preferred_agent in ("lea", "vitrine_bot", "standardiste"):
+                canal = {"lea": payload_raw.get("canal", "web"), "vitrine_bot": "web", "standardiste": "voice"}.get(preferred_agent, "web")
                 lang = detect_language(user_msg, client_lang)
-                await run_lea_streaming(user_msg, lang, canal, ws)
-                await asyncio.sleep(0.05)
-                continue
-
-            # Aliases backward-compat
-            if preferred_agent == "vitrine_bot":
-                lang = detect_language(user_msg, client_lang)
-                await run_lea_streaming(user_msg, lang, "web", ws)
-                await asyncio.sleep(0.05)
-                continue
-
-            if preferred_agent == "standardiste":
-                lang = detect_language(user_msg, client_lang)
-                await run_lea_streaming(user_msg, lang, "voice", ws)
+                needs_tony = await run_lea_streaming(user_msg, lang, canal, ws)
+                if needs_tony:
+                    # Léa transfère à Tony — dispatch en arrière-plan
+                    conversation_history.append({"role": "user", "content": user_msg})
+                    if len(conversation_history) > 20:
+                        conversation_history[:] = conversation_history[-20:]
+                    asyncio.create_task(
+                        tony_dispatch(user_msg, client_lang, ws, session_id, user_id, is_admin,
+                                      conversation_history, session_context)
+                    )
                 await asyncio.sleep(0.05)
                 continue
 
@@ -3067,6 +3093,84 @@ async def review_activation(activation_id: int, request: dict, _: str = Depends(
         raise
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ── Activation client (code 191070) ─────────────────────────────────────────
+
+@app.post("/api/admin/activate-client")
+async def activate_client(request: dict, _: str = Depends(verify_jwt_token)):
+    """Activation manuelle d'agents pour un client via code 191070."""
+    if request.get("code", "") != ACTIVATION_CODE:
+        raise HTTPException(status_code=403, detail="Code d'activation invalide")
+
+    session_id = request.get("session_id", "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id requis")
+
+    mode = request.get("mode", "client")  # "client" (30j) ou "premium" (permanent)
+    agents_param = request.get("agents", ["all"])
+    all_activatable = list(PREMIUM_AGENTS)
+    to_activate = all_activatable if agents_param in (["all"], "all") else [
+        a for a in agents_param if a in PREMIUM_AGENTS
+    ]
+    if not to_activate:
+        raise HTTPException(status_code=400, detail="Aucun agent valide spécifié")
+
+    conn = await db_connect()
+    try:
+        user = await conn.fetchrow("SELECT id FROM users WHERE session_id=$1", session_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="Session introuvable — le client doit d'abord ouvrir le chat")
+        user_id = user["id"]
+
+        for agent_name in to_activate:
+            if mode == "premium":
+                await conn.execute(
+                    """INSERT INTO user_subscriptions (user_id, agent_name, status, activated_at)
+                       VALUES ($1, $2, 'active', NOW())
+                       ON CONFLICT (user_id, agent_name) DO UPDATE SET status='active', activated_at=NOW(), trial_expires_at=NULL""",
+                    user_id, agent_name,
+                )
+            else:
+                await conn.execute(
+                    """INSERT INTO user_subscriptions (user_id, agent_name, status, activated_at, trial_expires_at)
+                       VALUES ($1, $2, 'active', NOW(), NOW() + INTERVAL '30 days')
+                       ON CONFLICT (user_id, agent_name) DO UPDATE SET status='active', activated_at=NOW(), trial_expires_at=NOW() + INTERVAL '30 days'""",
+                    user_id, agent_name,
+                )
+
+        # Approuver toutes les demandes en attente pour cette session
+        await conn.execute(
+            "UPDATE activation_requests SET status='approved', reviewed_at=NOW() WHERE session_id=$1 AND status='pending'",
+            session_id,
+        )
+    finally:
+        await conn.close()
+
+    # Notification WS live au client si sa session est active
+    ws = active_connections.get(session_id)
+    if ws:
+        notif = {
+            "fr": f"✅ Vos accès agents LEGA sont activés ! Vous pouvez maintenant utiliser : {', '.join(to_activate)}.",
+            "pt": f"✅ Os seus acessos aos agentes LEGA foram ativados! Pode agora usar: {', '.join(to_activate)}.",
+            "en": f"✅ Your LEGA agent access is now active! You can use: {', '.join(to_activate)}.",
+        }
+        try:
+            await ws.send_json({
+                "type": "agent_response",
+                "payload": notif["fr"],
+                "metadata": {"type": "access_granted", "agents": to_activate, "mode": mode},
+            })
+        except Exception:
+            pass
+
+    asyncio.create_task(notify_telegram(
+        f"✅ <b>Client activé (code 191070)</b>\n"
+        f"Session : <code>{session_id[:16]}</code>\n"
+        f"Mode : <b>{mode}</b>\n"
+        f"Agents : {', '.join(to_activate)}"
+    ))
+    return {"status": "ok", "activated": to_activate, "mode": mode, "session_id": session_id}
 
 
 # ── Agent Site Management ─────────────────────────────────────────────────────

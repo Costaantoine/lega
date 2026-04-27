@@ -9,19 +9,44 @@ DB_URL = os.getenv("DATABASE_URL", "postgresql://bvi_user:BviSecure2026!@db:5432
 # SearXNG — instance locale Docker (port 8888 sur host, port 8080 dans le réseau bvi-net)
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://bvi-searxng-1:8080")
 
+_ALLOWED_TLDS = {'.fr', '.pt', '.es', '.de', '.be', '.ch', '.com', '.net', '.org', '.eu', '.uk'}
+
+_TP_DOMAINS = [
+    "machineryzone", "mascus", "europe-tp", "leboncoin", "tracteuroccasion",
+    "agriaffaires", "tob.pt", "machinerytrader", "ironplanet", "ritchie",
+    "komatsu", "caterpillar", "liebherr", "volvoce", "codimatra",
+]
+
+def _tld_ok(url: str) -> bool:
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname or ''
+        parts = host.rstrip('.').split('.')
+        return len(parts) >= 2 and ('.' + parts[-1]) in _ALLOWED_TLDS
+    except Exception:
+        return True
+
+def _tp_domain_ok(url: str) -> bool:
+    url_low = url.lower()
+    return any(d in url_low for d in _TP_DOMAINS)
+
+_LANG_LOCALE = {"fr": "fr-FR", "pt": "pt-PT", "en": "en-US", "es": "es-ES", "de": "de-DE"}
+
 async def search_web(query: str, max_results: int = 5, lang: str = "fr") -> List[Dict]:
     """
     Recherche web via SearXNG local.
     Retourne une liste de {title, url, content} injectables dans un prompt LLM.
-    Fallback silencieux si SearXNG indisponible.
+    Post-filtre : TLD whitelist + domaines TP connus. Fallback silencieux.
     """
     try:
+        locale = _LANG_LOCALE.get(lang, "fr-FR")
         params = {
             "q": query,
             "format": "json",
-            "language": lang,
+            "language": locale,
+            "locale": locale,
             "categories": "general",
-            "engines": "bing,startpage,mojeek",
+            "engines": "bing,startpage,google",
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{SEARXNG_URL}/search", params=params)
@@ -29,13 +54,28 @@ async def search_web(query: str, max_results: int = 5, lang: str = "fr") -> List
                 logger.warning(f"SearXNG HTTP {resp.status_code}")
                 return []
             data = resp.json()
+            all_results = data.get("results", [])
             results = []
-            for r in data.get("results", [])[:max_results]:
+            rejected = 0
+            for r in all_results:
+                url = r.get("url", "")
+                # Filtre TLD : rejette finnois, chinois, japonais, etc.
+                if not _tld_ok(url):
+                    logger.debug(f"SearXNG TLD rejeté: {url[:60]}")
+                    rejected += 1
+                    continue
+                # Log informatif si domaine hors TP (sans rejeter)
+                if not _tp_domain_ok(url):
+                    logger.debug(f"SearXNG domaine non-TP (conservé): {url[:60]}")
                 results.append({
                     "title": r.get("title", "")[:120],
-                    "url": r.get("url", ""),
+                    "url": url,
                     "content": r.get("content", "")[:300],
                 })
+                if len(results) >= max_results:
+                    break
+            if rejected:
+                logger.info(f"SearXNG: {len(results)} retenus, {rejected} rejetés (TLD/domaine hors-scope)")
             return results
     except Exception as e:
         logger.warning(f"SearXNG indisponible: {e}")
@@ -89,7 +129,7 @@ async def fetch_page(url: str, timeout: float = 12.0) -> Optional[str]:
         return _cache[url][0]
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 LEGA-Bot/1.0", "Accept-Language": "fr-FR,fr;q=0.9,pt-PT;q=0.8", "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8"}
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, http2=True) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             resp = await client.get(url, headers=headers)
             if resp.status_code >= 400: return None
             html = resp.text
