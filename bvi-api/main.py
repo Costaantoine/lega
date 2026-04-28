@@ -620,6 +620,20 @@ async def handle_general_chat(
         "en": "I coordinate 13 AI agents for construction machinery. How can I help?",
         "es": "Coordino 13 agentes IA para maquinaria TP. ¿En qué puedo ayudarle?",
     }
+    # Si Tony a déjà produit une réponse directe (classify réussi ou fallback), on l'utilise
+    # sans appeler AGENT_MODEL — évite le double LLM (~30s → ~15s)
+    direct = classification.get("direct_response")
+    if direct:
+        try:
+            await ws.send_json({
+                "type": "agent_response",
+                "payload": direct,
+                "metadata": {"intent": "general_chat", "lang": lang, "agent": "tony_interface"},
+            })
+        except Exception:
+            pass
+        return direct
+
     history_str = _build_history_str(history or [])
     no_greet = "Tu as déjà accueilli l'utilisateur. Ne jamais recommencer par Bonjour ou une formule d'accueil. Va directement au sujet.\n" if history else ""
     prompt = (
@@ -632,7 +646,7 @@ async def handle_general_chat(
             response = _fallback.get(lang, _fallback["fr"])
     except Exception as e:
         logger.warning(f"general_chat failed [{session_id[:8]}]: {type(e).__name__} {e}")
-        response = classification.get("direct_response") or _fallback.get(lang, _fallback["fr"])
+        response = _fallback.get(lang, _fallback["fr"])
 
     try:
         await ws.send_json({
@@ -1033,7 +1047,7 @@ OBJET: <sujet de l'email en une ligne>
 ---
 ACTIONS: <suivi suggéré, relance, délai>"""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
             res = await client.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
@@ -1148,7 +1162,7 @@ Réponds de manière précise et structurée en te basant UNIQUEMENT sur la docu
 Si l'information n'est pas dans la documentation, dis-le clairement."""
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
             res = await client.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
@@ -1182,7 +1196,7 @@ Langue: {lang_instr}
 DEMANDE: {query}
 RÉPONSE:"""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
             res = await client.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
@@ -1212,7 +1226,7 @@ Langue: {lang_instr}
 DEMANDE: {query}
 DOCUMENT:"""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
             res = await client.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
@@ -1245,7 +1259,7 @@ Langue de réponse: {lang_instr}
 TEXTE À TRADUIRE / DEMANDE: {query}
 TRADUCTION:"""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
             res = await client.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
@@ -1274,7 +1288,7 @@ Langue principale: {lang_instr}
 DEMANDE: {query}
 EMAIL:"""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
             res = await client.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
@@ -1284,10 +1298,30 @@ EMAIL:"""
                     "options": {"temperature": 0.3, "num_predict": 500},
                 },
             )
-            return res.json().get("message", {}).get("content", "Résultat indisponible.").strip()
+            content = res.json().get("message", {}).get("content", "Résultat indisponible.").strip()
     except Exception as e:
         logger.error(f"DemandePrix agent error: {e}")
         return f"⚠️ Erreur agent Demandes de Prix: {str(e)[:100]}"
+
+    # Gate de confirmation — même mécanisme que sam_comms
+    # Si une adresse email est détectée dans la demande, stocker le brouillon
+    # et bloquer tout envoi SMTP jusqu'à confirmation explicite d'Antoine.
+    to_match = re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", query)
+    to_addr = to_match.group(0) if to_match else None
+    if to_addr:
+        subject = "Demande de prix LEGA"
+        subj_match = re.search(r"(?:Objet|Subject|Sujet|OBJET)\s*:\s*(.+)", content, re.IGNORECASE)
+        if subj_match:
+            subject = subj_match.group(1).strip()
+        draft_id = str(uuid.uuid4())
+        sam_pending[draft_id] = {
+            "to_addr": to_addr, "subject": subject, "body": content,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        confirm_note = f"\n\n📧 **Destinataire détecté : {to_addr}**\nCliquez sur **Confirmer l'envoi** pour envoyer cet email."
+        return content + confirm_note + f"\n___DRAFT_ID:{draft_id}___"
+
+    return content
 
 
 _DOC_KW = {"manuel","manuels","manual","manuais","fiche technique","ficha técnica","datasheet",
@@ -2476,7 +2510,7 @@ async def chat_rest(message: dict):
     system_prompt = "Tu es un expert en sourcing de machines TP pour l'export France→Portugal. Réponds en français, cite les sources du contexte."
     full_prompt = f"{system_prompt}\n\n📚 CONTEXTE:\n{context}\n\n❓ QUESTION: {user_msg}\n\n✅ RÉPONSE:"
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
             res = await client.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={"model": TONY_MODEL, "messages": [{"role": "user", "content": full_prompt}], "stream": False, "think": False, "options": {"temperature": 0.3, "num_predict": 2048}},
