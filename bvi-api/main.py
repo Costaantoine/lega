@@ -53,6 +53,19 @@ PREMIUM_AGENTS = {
 # Code d'activation client (saisi dans le dashboard par l'admin)
 ACTIVATION_CODE = "191070"
 
+# Tarif par agent (affiché dans le message upsell)
+AGENT_PRICES: dict[str, str] = {
+    "max_search": "15€/24h",
+    "sam_comms": "10€/24h",
+    "logistique": "10€/24h",
+    "comptable": "15€/24h",
+    "demandes_prix": "15€/24h",
+    "traducteur": "10€/24h",
+    "documentation": "10€/24h",
+    "lea_extract": "10€/24h",
+    "visa_vision": "10€/24h",
+}
+
 # Mode gestion site : "agent" (automatique) ou "manual" (dashboard)
 SITE_MANAGEMENT_MODE = os.getenv("SITE_MANAGEMENT_MODE", "manual")
 AGENT_API_KEY = os.getenv("AGENT_API_KEY", "")
@@ -218,6 +231,52 @@ async def notify_telegram(text: str) -> None:
         logger.warning(f"Telegram notification failed: {e}")
 
 
+async def notify_telegram_with_buttons(text: str, request_id: str) -> int | None:
+    """Envoie un message Telegram avec boutons inline Activer/Rejeter. Retourne le message_id."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json={
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "reply_markup": {
+                        "inline_keyboard": [[
+                            {"text": "⚡ Activer", "callback_data": f"activate:{request_id}"},
+                            {"text": "✕ Rejeter", "callback_data": f"reject:{request_id}"},
+                        ]]
+                    },
+                },
+            )
+            data = res.json()
+            return data.get("result", {}).get("message_id")
+    except Exception as e:
+        logger.warning(f"Telegram with buttons failed: {e}")
+        return None
+
+
+async def telegram_edit_message(message_id: int, text: str) -> None:
+    """Édite un message Telegram existant."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText",
+                json={
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "message_id": message_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                },
+            )
+    except Exception:
+        pass
+
+
 async def get_or_create_user(session_id: str) -> str:
     """Retourne l'user_id lié à la session, le crée si absent."""
     conn = await db_connect()
@@ -250,6 +309,47 @@ async def check_subscription(user_id: str, agent_name: str) -> str | None:
         if row["trial_expires_at"] < datetime.now(timezone.utc):
             return "expired"
     return row["status"]
+
+
+async def check_agent_license(user_id: str, agent_name: str) -> bool:
+    """Retourne True si une licence active et non expirée existe pour cet agent."""
+    conn = await db_connect()
+    try:
+        row = await conn.fetchrow(
+            """SELECT 1 FROM user_subscriptions
+               WHERE user_id=$1 AND agent_name=$2
+               AND status='active'
+               AND (trial_expires_at IS NULL OR trial_expires_at > NOW())""",
+            user_id, agent_name,
+        )
+        return row is not None
+    finally:
+        await conn.close()
+
+
+async def _create_license_request(user_id: str, agent_name: str, original_message: str) -> str | None:
+    """Crée une demande de licence dans agent_license_requests si pas déjà pending (1h). Retourne l'UUID."""
+    conn = await db_connect()
+    try:
+        existing = await conn.fetchrow(
+            """SELECT id FROM agent_license_requests
+               WHERE client_id=$1 AND agent_name=$2 AND status='pending'
+               AND requested_at > NOW() - INTERVAL '1 hour'""",
+            user_id, agent_name,
+        )
+        if existing:
+            return str(existing["id"])
+        row = await conn.fetchrow(
+            """INSERT INTO agent_license_requests (client_id, agent_name, original_message)
+               VALUES ($1, $2, $3) RETURNING id""",
+            user_id, agent_name, original_message[:500],
+        )
+        return str(row["id"]) if row else None
+    except Exception as e:
+        logger.warning(f"_create_license_request failed: {e}")
+        return None
+    finally:
+        await conn.close()
 
 
 async def activate_trial(user_id: str, agent_name: str) -> None:
@@ -730,56 +830,96 @@ async def tony_dispatch(
             return
 
         if agent in PREMIUM_AGENTS and not is_admin:
-            sub_status = await check_subscription(user_id, agent)
-            if sub_status not in ("active", "trial"):
-                # Agent verrouillé — demande d'activation transmise à l'admin
-                locked_msg = {
+            sub_expired = await check_subscription(user_id, agent)
+            if sub_expired == "expired":
+                expired_msg = {
+                    "fr": "⏱️ Votre accès à cet agent a expiré. Contactez-nous pour renouveler.",
+                    "pt": "⏱️ O seu acesso a este agente expirou. Contacte-nos para renovar.",
+                    "en": "⏱️ Your access to this agent has expired. Contact us to renew.",
+                }
+                await ws.send_json({
+                    "type": "agent_response",
+                    "payload": expired_msg.get(lang, expired_msg["fr"]),
+                    "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "expired"},
+                })
+                return
+
+            license_ok = await check_agent_license(user_id, agent)
+            if not license_ok:
+                price = AGENT_PRICES.get(agent, "10€/24h")
+                conn_chk = await db_connect()
+                try:
+                    already_pending = await conn_chk.fetchrow(
+                        """SELECT id FROM agent_license_requests
+                           WHERE client_id=$1 AND agent_name=$2 AND status='pending'
+                           AND requested_at > NOW() - INTERVAL '1 hour'""",
+                        user_id, agent,
+                    )
+                finally:
+                    await conn_chk.close()
+
+                if already_pending:
+                    pending_msg = {
+                        "fr": "⏳ Votre demande pour cet agent est déjà en cours de traitement.",
+                        "pt": "⏳ O seu pedido para este agente já está em processamento.",
+                        "en": "⏳ Your request for this agent is already being processed.",
+                    }
+                    await ws.send_json({
+                        "type": "agent_response",
+                        "payload": pending_msg.get(lang, pending_msg["fr"]),
+                        "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "pending"},
+                    })
+                    return
+
+                upsell_msg = {
                     "fr": (
-                        f"🔒 L'agent <b>{agent}</b> nécessite une activation.\n\n"
-                        f"Votre demande a été transmise à notre équipe.\n"
-                        f"Vous serez notifié dès que l'accès est accordé.\n\n"
+                        f"🔒 L'agent <b>{agent}</b> est payant.\n\n"
+                        f"Tarif : <b>{price}</b> — accès 24h renouvelable.\n"
+                        f"Votre demande a été transmise à Antoine.\n"
+                        f"Vous serez notifié dès que l'accès est activé.\n\n"
                         f"💡 Contactez-nous pour un accès immédiat."
                     ),
                     "pt": (
-                        f"🔒 O agente <b>{agent}</b> requer ativação.\n\n"
-                        f"O seu pedido foi transmitido à nossa equipa.\n"
-                        f"Será notificado assim que o acesso for concedido.\n\n"
+                        f"🔒 O agente <b>{agent}</b> é pago.\n\n"
+                        f"Tarifa : <b>{price}</b> — acesso 24h renovável.\n"
+                        f"O seu pedido foi transmitido a Antoine.\n"
+                        f"Será notificado assim que o acesso for ativado.\n\n"
                         f"💡 Contacte-nos para acesso imediato."
                     ),
                     "en": (
-                        f"🔒 The <b>{agent}</b> agent requires activation.\n\n"
-                        f"Your request has been forwarded to our team.\n"
-                        f"You'll be notified once access is granted.\n\n"
+                        f"🔒 The <b>{agent}</b> agent is a paid feature.\n\n"
+                        f"Rate : <b>{price}</b> — 24h renewable access.\n"
+                        f"Your request has been forwarded to Antoine.\n"
+                        f"You'll be notified once access is activated.\n\n"
                         f"💡 Contact us for immediate access."
                     ),
                 }
                 await ws.send_json({
                     "type": "agent_response",
-                    "payload": locked_msg.get(lang, locked_msg["fr"]),
-                    "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "locked"},
+                    "payload": upsell_msg.get(lang, upsell_msg["fr"]),
+                    "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "license_required"},
                 })
-                # Enregistrer demande d'activation (éviter les doublons)
-                try:
-                    conn_act = await db_connect()
-                    existing = await conn_act.fetchrow(
-                        "SELECT id FROM activation_requests WHERE session_id=$1 AND agent_name=$2 AND status='pending'",
-                        session_id, agent,
+                request_id = await _create_license_request(user_id, agent, user_msg)
+                if request_id:
+                    tg_text = (
+                        f"🔐 <b>Demande de licence</b>\n"
+                        f"Agent : <code>{agent}</code> — {price}\n"
+                        f"Client : <code>{user_id[:12]}</code>\n"
+                        f"Message : {user_msg[:200]}\n"
+                        f"Langue : {lang}\n"
+                        f"ID : <code>{request_id}</code>"
                     )
-                    if not existing:
-                        await conn_act.execute(
-                            "INSERT INTO activation_requests (session_id, agent_name, user_message, status) VALUES ($1, $2, $3, 'pending')",
-                            session_id, agent, user_msg[:500],
-                        )
-                    await conn_act.close()
-                except Exception as e:
-                    logger.warning(f"activation_requests insert failed: {e}")
-                asyncio.create_task(notify_telegram(
-                    f"🔐 <b>Activation demandée</b>\n"
-                    f"Agent : <code>{agent}</code>\n"
-                    f"Session : <code>{session_id[:12]}</code>\n"
-                    f"Message : {user_msg[:200]}\n"
-                    f"Langue : {lang}"
-                ))
+                    msg_id = await notify_telegram_with_buttons(tg_text, request_id)
+                    if msg_id:
+                        try:
+                            conn_tg = await db_connect()
+                            await conn_tg.execute(
+                                "UPDATE agent_license_requests SET telegram_message_id=$1 WHERE id=$2",
+                                msg_id, request_id,
+                            )
+                            await conn_tg.close()
+                        except Exception as e:
+                            logger.warning(f"telegram_message_id update failed: {e}")
                 return
 
         # Créer la tâche EN PREMIER pour avoir le task_id réel
@@ -2357,6 +2497,39 @@ async def startup():
         logger.info("search_results table ready")
     except Exception as e:
         logger.warning(f"search_results table init failed: {e}")
+    try:
+        conn = await db_connect()
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_license_requests (
+                id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                client_id        TEXT NOT NULL,
+                company_name     TEXT,
+                agent_name       TEXT NOT NULL,
+                original_message TEXT,
+                status           TEXT DEFAULT 'pending'
+                                 CHECK (status IN ('pending','active','rejected','expired')),
+                requested_at     TIMESTAMPTZ DEFAULT NOW(),
+                activated_at     TIMESTAMPTZ,
+                expires_at       TIMESTAMPTZ,
+                payment_status   TEXT DEFAULT 'trial'
+                                 CHECK (payment_status IN ('trial','paid','expired')),
+                telegram_message_id INTEGER
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_license_req_client ON agent_license_requests(client_id, agent_name, status)"
+        )
+        await conn.execute(
+            "ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ"
+        )
+        await conn.execute(
+            "ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS payment_status TEXT DEFAULT 'trial'"
+        )
+        await conn.close()
+        logger.info("agent_license_requests table + user_subscriptions columns ready")
+    except Exception as e:
+        logger.warning(f"agent_license_requests table init failed: {e}")
+    asyncio.create_task(telegram_polling_task())
     logger.info("LEGA API v1.0 started — Tony + Worker + Trial cron + Morning brief + RAG online")
 
 
@@ -3050,83 +3223,310 @@ async def get_monitoring(_: str = Depends(verify_jwt_token)):
     return result
 
 
-# ── Activations ───────────────────────────────────────────────────────────────
+# ── Licences agents ───────────────────────────────────────────────────────────────
 
-@app.get("/api/activations")
-async def get_activations(status: str = None, _: str = Depends(verify_jwt_token)):
+@app.get("/admin/license/pending", dependencies=[Depends(verify_jwt_token)])
+async def list_pending_licenses():
+    """Liste toutes les demandes de licence en attente."""
     try:
         conn = await db_connect()
-        query = "SELECT id, session_id, user_email, agent_name, user_message, status, admin_notes, created_at, reviewed_at FROM activation_requests"
-        params = []
-        if status:
-            query += " WHERE status=$1"
-            params.append(status)
-        query += " ORDER BY created_at DESC"
-        rows = await conn.fetch(query, *params)
+        rows = await conn.fetch(
+            """SELECT id, client_id, company_name, agent_name, original_message,
+                      status, payment_status, requested_at, activated_at, expires_at
+               FROM agent_license_requests
+               WHERE status='pending'
+               ORDER BY requested_at DESC"""
+        )
         await conn.close()
         return [dict(r) for r in rows]
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(500, detail=str(e))
 
 
-@app.post("/api/activations")
-async def create_activation(request: dict):
+@app.post("/admin/license/activate/{request_id}")
+async def activate_license(request_id: str):
+    """Active une licence 24h suite à l'approbation d'Antoine (webhook Telegram)."""
+    conn = await db_connect()
     try:
-        conn = await db_connect()
-        row = await conn.fetchrow(
-            """INSERT INTO activation_requests (session_id, user_email, agent_name, user_message)
-               VALUES ($1, $2, $3, $4) RETURNING id""",
-            request.get("session_id"), request.get("user_email"), request.get("agent_name"), request.get("user_message")
+        req = await conn.fetchrow(
+            "SELECT * FROM agent_license_requests WHERE id=$1", request_id
         )
+        if not req:
+            raise HTTPException(404, detail="Demande introuvable")
+        if req["status"] != "pending":
+            raise HTTPException(400, detail=f"Demande déjà traitée : {req['status']}")
+
+        await conn.execute(
+            """UPDATE agent_license_requests
+               SET status='active', activated_at=NOW(), expires_at=NOW() + INTERVAL '24 hours',
+                   payment_status='paid'
+               WHERE id=$1""",
+            request_id,
+        )
+        await conn.execute(
+            """INSERT INTO user_subscriptions
+                   (user_id, agent_name, status, activated_at, trial_expires_at, payment_status)
+               VALUES ($1, $2, 'active', NOW(), NOW() + INTERVAL '24 hours', 'paid')
+               ON CONFLICT (user_id, agent_name) DO UPDATE
+               SET status='active', activated_at=NOW(),
+                   trial_expires_at=NOW() + INTERVAL '24 hours',
+                   payment_status='paid'""",
+            req["client_id"], req["agent_name"],
+        )
+    finally:
         await conn.close()
-        return {"status": "ok", "id": row["id"]}
+
+    ws = None
+    try:
+        conn2 = await db_connect()
+        session_row = await conn2.fetchrow(
+            "SELECT session_id FROM users WHERE id=$1", req["client_id"]
+        )
+        await conn2.close()
+        if session_row:
+            ws = active_connections.get(session_row["session_id"])
+    except Exception:
+        pass
+
+    if ws:
+        notif = {
+            "fr": f"✅ Votre accès à l'agent <b>{req['agent_name']}</b> est activé pour 24h !",
+            "pt": f"✅ O seu acesso ao agente <b>{req['agent_name']}</b> está ativo por 24h!",
+            "en": f"✅ Your access to agent <b>{req['agent_name']}</b> is active for 24h!",
+        }
+        try:
+            await ws.send_json({
+                "type": "agent_response",
+                "payload": notif["fr"],
+                "metadata": {"type": "license_activated", "agent": req["agent_name"]},
+            })
+        except Exception:
+            pass
+
+    if req["telegram_message_id"]:
+        asyncio.create_task(telegram_edit_message(
+            req["telegram_message_id"],
+            f"✅ <b>Licence activée</b>\nAgent : <code>{req['agent_name']}</code>\n"
+            f"Client : <code>{req['client_id'][:12]}</code>\n"
+            f"Expire : dans 24h",
+        ))
+
+    logger.info(f"License activated: {request_id} → {req['agent_name']} for {req['client_id'][:12]}")
+    return {"status": "ok", "request_id": request_id, "agent": req["agent_name"], "expires_in": "24h"}
+
+
+@app.post("/admin/license/reject/{request_id}")
+async def reject_license(request_id: str):
+    """Rejette une demande de licence."""
+    conn = await db_connect()
+    try:
+        req = await conn.fetchrow(
+            "SELECT * FROM agent_license_requests WHERE id=$1", request_id
+        )
+        if not req:
+            raise HTTPException(404, detail="Demande introuvable")
+        if req["status"] != "pending":
+            raise HTTPException(400, detail=f"Demande déjà traitée : {req['status']}")
+
+        await conn.execute(
+            "UPDATE agent_license_requests SET status='rejected' WHERE id=$1", request_id
+        )
+    finally:
+        await conn.close()
+
+    if req["telegram_message_id"]:
+        asyncio.create_task(telegram_edit_message(
+            req["telegram_message_id"],
+            f"✕ <b>Licence refusée</b>\nAgent : <code>{req['agent_name']}</code>\n"
+            f"Client : <code>{req['client_id'][:12]}</code>",
+        ))
+
+    logger.info(f"License rejected: {request_id} → {req['agent_name']}")
+    return {"status": "ok", "request_id": request_id, "result": "rejected"}
+
+
+# ── Webhook Telegram (callback des boutons inline) ─────────────────────────────
+
+async def _handle_telegram_callback(callback: dict) -> None:
+    """Traite un callback_query Telegram (bouton inline Activer / Rejeter)."""
+    callback_id = callback.get("id")
+    data = callback.get("data", "")
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery",
+                json={"callback_query_id": callback_id, "text": "Traitement en cours..."},
+            )
+    except Exception:
+        pass
+
+    if data.startswith("activate:"):
+        request_id = data.split(":", 1)[1]
+        try:
+            conn = await db_connect()
+            req = await conn.fetchrow(
+                "SELECT status FROM agent_license_requests WHERE id=$1", request_id
+            )
+            await conn.close()
+            if req and req["status"] == "pending":
+                await activate_license(request_id)
+        except Exception as e:
+            logger.error(f"Telegram callback activate error: {e}")
+
+    elif data.startswith("reject:"):
+        request_id = data.split(":", 1)[1]
+        try:
+            conn = await db_connect()
+            req = await conn.fetchrow(
+                "SELECT status FROM agent_license_requests WHERE id=$1", request_id
+            )
+            await conn.close()
+            if req and req["status"] == "pending":
+                await reject_license(request_id)
+        except Exception as e:
+            logger.error(f"Telegram callback reject error: {e}")
+
+
+async def telegram_polling_task() -> None:
+    """Polling Telegram pour traiter les callbacks des boutons inline."""
+    if not TELEGRAM_TOKEN:
+        return
+    offset = 0
+    logger.info("Telegram polling task started")
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=35.0) as client:
+                res = await client.get(
+                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+                    params={"timeout": 30, "offset": offset, "allowed_updates": ["callback_query"]},
+                )
+                updates = res.json().get("result", [])
+                for upd in updates:
+                    offset = upd["update_id"] + 1
+                    if "callback_query" in upd:
+                        asyncio.create_task(_handle_telegram_callback(upd["callback_query"]))
+        except Exception as e:
+            logger.warning(f"Telegram polling error: {e}")
+            await asyncio.sleep(5)
+
+
+# ── Abonnements (dashboard) ────────────────────────────────────────────────────
+
+@app.get("/api/subscriptions", dependencies=[Depends(verify_jwt_token)])
+async def get_subscriptions(status: str = None, agent: str = None):
+    """Liste toutes les souscriptions actives/trial/expirées."""
+    try:
+        conn = await db_connect()
+        q = """SELECT us.id, us.user_id, us.agent_name, us.status, us.activated_at,
+                      us.trial_expires_at, us.payment_status,
+                      u.session_id, u.email, u.company_name, u.preferred_language
+               FROM user_subscriptions us
+               LEFT JOIN users u ON u.id = us.user_id
+               WHERE 1=1"""
+        params = []
+        if status:
+            params.append(status)
+            q += f" AND us.status=${len(params)}"
+        if agent:
+            params.append(agent)
+            q += f" AND us.agent_name=${len(params)}"
+        q += " ORDER BY us.activated_at DESC LIMIT 200"
+        rows = await conn.fetch(q, *params)
+        await conn.close()
+        return [dict(r) for r in rows]
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        raise HTTPException(500, detail=str(e))
 
 
-@app.put("/api/activations/{activation_id}")
-async def review_activation(activation_id: int, request: dict, _: str = Depends(verify_jwt_token)):
-    new_status = request.get("status")
-    if new_status not in ("approved", "rejected"):
-        raise HTTPException(400, "Status must be approved or rejected")
-    admin_notes = request.get("admin_notes", "")
+@app.post("/api/subscriptions/{sub_id}/extend", dependencies=[Depends(verify_jwt_token)])
+async def extend_subscription(sub_id: int, request: dict):
+    """Prolonge un abonnement de N jours."""
+    days = int(request.get("days", 30))
     try:
         conn = await db_connect()
         row = await conn.fetchrow(
-            """UPDATE activation_requests SET status=$1, admin_notes=$2, reviewed_at=NOW()
-               WHERE id=$3 RETURNING id, status, agent_name, session_id""",
-            new_status, admin_notes, activation_id
+            """UPDATE user_subscriptions
+               SET trial_expires_at = GREATEST(COALESCE(trial_expires_at, NOW()), NOW()) + ($2 || ' days')::INTERVAL,
+                   status = 'active'
+               WHERE id=$1 RETURNING id, agent_name, trial_expires_at""",
+            sub_id, str(days),
         )
         await conn.close()
         if not row:
-            raise HTTPException(404, "Demande non trouvée")
-        # If approved: create trial subscription
-        if new_status == "approved" and row["agent_name"] and row["session_id"]:
-            conn2 = await db_connect()
-            try:
-                user = await conn2.fetchrow("SELECT id FROM users WHERE session_id=$1", row["session_id"])
-                if user:
-                    await conn2.execute(
-                        """INSERT INTO user_subscriptions (user_id, agent_name, status, activated_at, trial_expires_at)
-                           VALUES ($1, $2, 'trial', NOW(), NOW() + INTERVAL '24 hours')
-                           ON CONFLICT (user_id, agent_name) DO UPDATE SET status='trial', trial_expires_at=NOW() + INTERVAL '24 hours'""",
-                        user["id"], row["agent_name"]
-                    )
-                # Push WS notification to user
-                ws = active_connections.get(row["session_id"])
-                if ws:
-                    await ws.send_json({
-                        "type": "agent_response",
-                        "payload": f"✅ Votre accès trial à l'agent {row['agent_name']} a été approuvé ! Valable 24h.",
-                        "metadata": {"type": "trial_approved", "agent": row["agent_name"]},
-                    })
-            finally:
-                await conn2.close()
-        return {"status": "ok", "id": row["id"], "result": new_status}
+            raise HTTPException(404, detail="Abonnement introuvable")
+        return {"status": "ok", "id": row["id"], "expires_at": str(row["trial_expires_at"])}
     except HTTPException:
         raise
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        raise HTTPException(500, detail=str(e))
+
+
+@app.delete("/api/subscriptions/{sub_id}", dependencies=[Depends(verify_jwt_token)])
+async def cancel_subscription(sub_id: int):
+    """Désactive un abonnement."""
+    try:
+        conn = await db_connect()
+        await conn.execute(
+            "UPDATE user_subscriptions SET status='expired', trial_expires_at=NOW() WHERE id=$1", sub_id
+        )
+        await conn.close()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
+
+
+@app.post("/api/subscriptions/activate", dependencies=[Depends(verify_jwt_token)])
+async def activate_subscription(request: dict):
+    """Active un agent pour un client avec une durée spécifiée."""
+    agent_name = request.get("agent_name", "").strip()
+    client_id = request.get("client_id", "").strip()
+    duration_hours = int(request.get("duration_hours", 24))
+    if not agent_name or not client_id:
+        raise HTTPException(400, detail="agent_name et client_id requis")
+    try:
+        conn = await db_connect()
+        if duration_hours == 0:
+            await conn.execute(
+                """INSERT INTO user_subscriptions (user_id, agent_name, status, activated_at, payment_status)
+                   VALUES ($1, $2, 'active', NOW(), 'paid')
+                   ON CONFLICT (user_id, agent_name) DO UPDATE
+                   SET status='active', activated_at=NOW(), trial_expires_at=NULL, payment_status='paid'""",
+                client_id, agent_name,
+            )
+        else:
+            await conn.execute(
+                """INSERT INTO user_subscriptions (user_id, agent_name, status, activated_at, trial_expires_at, payment_status)
+                   VALUES ($1, $2, 'active', NOW(), NOW() + ($3 || ' hours')::INTERVAL, 'paid')
+                   ON CONFLICT (user_id, agent_name) DO UPDATE
+                   SET status='active', activated_at=NOW(),
+                       trial_expires_at=NOW() + ($3 || ' hours')::INTERVAL,
+                       payment_status='paid'""",
+                client_id, agent_name, str(duration_hours),
+            )
+        await conn.close()
+        return {"status": "ok", "agent": agent_name, "client_id": client_id, "duration_hours": duration_hours}
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
+
+
+@app.post("/api/subscriptions/deactivate", dependencies=[Depends(verify_jwt_token)])
+async def deactivate_subscription(request: dict):
+    """Désactive un agent pour un client."""
+    agent_name = request.get("agent_name", "").strip()
+    client_id = request.get("client_id", "").strip()
+    if not agent_name or not client_id:
+        raise HTTPException(400, detail="agent_name et client_id requis")
+    try:
+        conn = await db_connect()
+        await conn.execute(
+            "UPDATE user_subscriptions SET status='expired', trial_expires_at=NOW() WHERE user_id=$1 AND agent_name=$2",
+            client_id, agent_name,
+        )
+        await conn.close()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
 
 
 # ── Activation client (code 191070) ─────────────────────────────────────────
@@ -3173,11 +3573,6 @@ async def activate_client(request: dict, _: str = Depends(verify_jwt_token)):
                     user_id, agent_name,
                 )
 
-        # Approuver toutes les demandes en attente pour cette session
-        await conn.execute(
-            "UPDATE activation_requests SET status='approved', reviewed_at=NOW() WHERE session_id=$1 AND status='pending'",
-            session_id,
-        )
     finally:
         await conn.close()
 

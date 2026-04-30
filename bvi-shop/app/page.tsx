@@ -140,7 +140,7 @@ export default function ClientApp() {
     setStdMsgs(p => [...p, { role: "user", text, time: now() }]);
     setStdLoading(true);
     if (ws.current?.readyState === WebSocket.OPEN) {
-      ws.current.send(JSON.stringify({ type: "user_message", payload: text, lang: stdLang, preferred_agent: "standardiste" }));
+      ws.current.send(JSON.stringify({ type: "user_message", payload: text, lang: stdLang, preferred_agent: "bell" }));
     } else {
       setStdMsgs(p => [...p, { role: "agent", text: stdLang === "fr" ? "⚠️ Reconnexion..." : stdLang === "pt" ? "⚠️ A reconectar..." : "⚠️ Reconnecting...", time: now() }]);
       setStdLoading(false);
@@ -232,7 +232,7 @@ export default function ClientApp() {
           setThinkingStatus("done");
           setTimeout(() => setThinkingStatus(null), 300);
           const text = stripEmoji(d.payload || "");
-          if (d.metadata?.agent === "standardiste") {
+          if (d.metadata?.agent === "bell") {
             setStdMsgs(p => {
               const last = p[p.length - 1];
               if (last?.streaming) return [...p.slice(0, -1), { ...last, streaming: false }];
@@ -462,7 +462,7 @@ export default function ClientApp() {
                   transition: "background 0.2s",
                 }}
               >
-                <span>📋 Annonces trouvées par Max</span>
+                <span>📋 Annonces trouvées par Scout</span>
                 {pendingCount > 0 ? (
                   <span style={{
                     background: "#dc2626", color: "#fff", borderRadius: "50%",
@@ -495,7 +495,7 @@ export default function ClientApp() {
         {tab === "annonces" && (
           <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-              <span style={{ fontWeight: 700, fontSize: 15 }}>📋 Annonces trouvées par Max</span>
+              <span style={{ fontWeight: 700, fontSize: 15 }}>📋 Annonces trouvées par Scout</span>
               <button onClick={loadSearchResults} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #334155", background: "#1e293b", color: "#94a3b8", cursor: "pointer", fontSize: 12 }}>🔄</button>
             </div>
             {resultsLoading ? (
@@ -503,7 +503,7 @@ export default function ClientApp() {
             ) : searchResults.length === 0 ? (
               <div style={{ textAlign: "center", padding: 60, color: "#475569" }}>
                 <div style={{ fontSize: 36, marginBottom: 12 }}>🔍</div>
-                <div style={{ fontSize: 14 }}>Aucune annonce — demandez à Tony de rechercher</div>
+                <div style={{ fontSize: 14 }}>Aucune annonce — demandez à Tony de lancer Scout</div>
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -648,7 +648,7 @@ export default function ClientApp() {
           background: "#0f172a", color: "#60a5fa", fontSize: 24, cursor: "pointer",
           display: "flex", alignItems: "center", justifyContent: "center",
           boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
-        }} title="Standardiste LEGA">
+        }} title="Bell — Standardiste LEGA">
           📞
         </button>
       )}
@@ -662,7 +662,7 @@ export default function ClientApp() {
           {/* Header */}
           <div style={{ background: "#0f172a", borderBottom: "1px solid #1e293b", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 16 }}>📞 Standardiste LEGA</div>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>📞 Bell — Standardiste LEGA</div>
               <div style={{ fontSize: 11, color: "#64748b" }}>
                 {stdLang === "fr" ? "Léa — Réception multilingue" : stdLang === "pt" ? "Léa — Receção multilingue" : "Lea — Multilingual reception"}
               </div>

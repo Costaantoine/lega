@@ -15,7 +15,7 @@ const badge = (c: string): React.CSSProperties => ({ display: 'inline-block', pa
 
 const STATUS_COLORS: Record<string, string> = { available: '#4ade80', sold: '#f87171', reserved: '#fb923c', new: '#60a5fa', archived: '#64748b' };
 
-type Tab = 'config' | 'products' | 'sections' | 'translations' | 'import';
+type Tab = 'config' | 'products' | 'sections' | 'translations' | 'import' | 'hero';
 
 export default function SiteVitrinePage() {
   const [tab, setTab] = useState<Tab>('config');
@@ -158,7 +158,58 @@ export default function SiteVitrinePage() {
     else if (d.ok) flash('ℹ️ Aucune nouvelle annonce (déjà importées)');
   };
 
-  const TABS: { id: Tab; label: string }[] = [{ id: 'config', label: '⚙️ Config' }, { id: 'products', label: '📦 Produits' }, { id: 'sections', label: '🧩 Sections' }, { id: 'translations', label: '🌍 Traductions' }, { id: 'import', label: '🔄 Import tob.pt' }];
+
+  // Hero Images
+  const SITE_ADMIN = 'http://76.13.141.221:8003';
+  const [heroImages, setHeroImages]         = useState<any[]>([]);
+  const [heroIntervalInput, setHeroIntervalInput] = useState('3');
+  const heroImgRef = useRef<HTMLInputElement>(null);
+
+  const loadHeroImages = () => {
+    fetch(SITE_ADMIN + '/api/site/hero-images')
+      .then(r => r.json())
+      .then(d => { setHeroImages(d.images || []); setHeroIntervalInput(String(((d.interval_ms || 3000) / 1000).toFixed(1))); })
+      .catch(() => {});
+  };
+  useEffect(() => { if (tab === 'hero') loadHeroImages(); }, [tab]);
+
+  const uploadHeroImage = async () => {
+    const file = heroImgRef.current?.files?.[0]; if (!file) return;
+    const fd = new FormData(); fd.append('file', file);
+    const res = await fetch(SITE_ADMIN + '/admin/hero-images', { method: 'POST', headers: ah(), body: fd });
+    const d = await res.json();
+    if (d.ok) { flash('Image ajoutee'); loadHeroImages(); if (heroImgRef.current) heroImgRef.current.value = ''; }
+  };
+
+  const toggleHeroActive = async (id: number, is_active: boolean) => {
+    await fetch(SITE_ADMIN + '/admin/hero-images/' + id, { method: 'PUT', headers: ahj(), body: JSON.stringify({ is_active: !is_active }) });
+    loadHeroImages();
+  };
+
+  const deleteHeroImage = async (id: number) => {
+    if (!confirm('Supprimer cette image ?')) return;
+    await fetch(SITE_ADMIN + '/admin/hero-images/' + id, { method: 'DELETE', headers: ah() });
+    flash('Image supprimee'); loadHeroImages();
+  };
+
+  const moveHero = async (index: number, dir: number) => {
+    const imgs = [...heroImages];
+    const swap = index + dir;
+    if (swap < 0 || swap >= imgs.length) return;
+    [imgs[index], imgs[swap]] = [imgs[swap], imgs[index]];
+    const reorder = imgs.map((img, i) => ({ id: img.id, position: i }));
+    await fetch(SITE_ADMIN + '/admin/hero-images/reorder', { method: 'PUT', headers: ahj(), body: JSON.stringify(reorder) });
+    loadHeroImages();
+  };
+
+  const saveHeroInterval = async () => {
+    const ms = Math.round(parseFloat(heroIntervalInput) * 1000);
+    if (isNaN(ms) || ms < 1000) { flash('Minimum 1 seconde'); return; }
+    await fetch(SITE_ADMIN + '/admin/site-config/hero-interval', { method: 'PUT', headers: ahj(), body: JSON.stringify({ value_ms: ms }) });
+    flash('Intervalle mis a jour : ' + heroIntervalInput + 's');
+  };
+
+  const TABS: { id: Tab; label: string }[] = [{ id: 'config', label: '⚙️ Config' }, { id: 'products', label: '📦 Produits' }, { id: 'sections', label: '🧩 Sections' }, { id: 'translations', label: '🌍 Traductions' }, { id: 'import', label: '🔄 Import tob.pt' }, { id: 'hero', label: '🖼️ Hero' }];
 
   return (
     <div>
@@ -396,6 +447,44 @@ export default function SiteVitrinePage() {
                   {importResult.errors.map((e: string, i: number) => <div key={i} style={{ fontSize: 12, color: '#f87171' }}>{e}</div>)}
                 </div>
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'hero' && (
+        <div>
+          <div style={{ ...card, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, color: '#94a3b8' }}>Duree d'affichage :</span>
+            <input type='number' min={1} max={30} step={0.5} value={heroIntervalInput}
+              onChange={e => setHeroIntervalInput(e.target.value)} style={{ ...input, width: 80 }} />
+            <span style={{ fontSize: 13, color: '#94a3b8' }}>secondes</span>
+            <button onClick={saveHeroInterval} style={{ padding: '6px 14px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, fontWeight: 700, cursor: 'pointer', fontSize: 13 }}>Sauvegarder</button>
+          </div>
+          <div style={{ ...card, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <input ref={heroImgRef} type='file' accept='image/jpeg,image/png,image/webp' style={{ fontSize: 13, color: '#94a3b8' }} />
+            <button onClick={uploadHeroImage} style={{ padding: '6px 16px', background: '#059669', color: '#fff', border: 'none', borderRadius: 6, fontWeight: 700, cursor: 'pointer', fontSize: 13 }}>+ Ajouter image</button>
+          </div>
+          {heroImages.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 40, color: '#475569' }}>Aucune image Hero.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {heroImages.map((img: any, i: number) => (
+                <div key={img.id} style={{ ...card, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', opacity: img.is_active ? 1 : 0.5 }}>
+                  <img src={SITE_ADMIN + (img.url.startsWith('http') ? new URL(img.url).pathname : img.url)}
+                    alt={img.alt_text || 'Hero'} style={{ width: 100, height: 64, objectFit: 'cover', borderRadius: 6, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 120 }}>
+                    <div style={{ fontSize: 12, color: '#94a3b8' }}>Position {img.position} — ID #{img.id}</div>
+                    <div style={{ fontSize: 11, color: '#475569', fontFamily: 'monospace', wordBreak: 'break-all' }}>{img.url}</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button onClick={() => moveHero(i, -1)} disabled={i === 0} style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #334155', background: '#0f172a', color: '#94a3b8', cursor: i === 0 ? 'not-allowed' : 'pointer' }}>▲</button>
+                    <button onClick={() => moveHero(i, 1)} disabled={i === heroImages.length - 1} style={{ padding: '4px 10px', borderRadius: 5, border: '1px solid #334155', background: '#0f172a', color: '#94a3b8', cursor: i === heroImages.length - 1 ? 'not-allowed' : 'pointer' }}>▼</button>
+                    <button onClick={() => toggleHeroActive(img.id, img.is_active)} style={{ padding: '4px 10px', borderRadius: 5, border: 'none', fontWeight: 600, fontSize: 12, cursor: 'pointer', background: img.is_active ? '#4ade8022' : '#64748b22', color: img.is_active ? '#4ade80' : '#64748b' }}>{img.is_active ? 'Actif' : 'Inactif'}</button>
+                    <button onClick={() => deleteHeroImage(img.id)} style={{ padding: '4px 10px', borderRadius: 5, border: 'none', background: '#f8717122', color: '#f87171', fontWeight: 700, cursor: 'pointer' }}>Suppr.</button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

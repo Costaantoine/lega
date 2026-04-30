@@ -11,7 +11,8 @@ const badge = (color: string): React.CSSProperties => ({
 const STATUS_COLORS: any = { active: '#4ade80', maintenance: '#fb923c', overloaded: '#f87171' };
 const PREMIUM_COLOR = '#a78bfa';
 const FREE_COLOR = '#22d3ee';
-const ALWAYS_FREE = new Set(['tony_interface', 'lea', 'agenda']);
+const ALWAYS_FREE = new Set(['tony', 'bell', 'lea']);
+const ADMIN_AGENTS = new Set(['admin']);
 
 const inputStyle: React.CSSProperties = {
   padding: '7px 11px', borderRadius: 7, border: '1px solid #334155',
@@ -167,7 +168,7 @@ export default function AgentsPage() {
           )}
           <div style={{ marginTop: 8, fontSize: 11, color: '#475569' }}>
             Le session_id se trouve dans la page <b>Activations</b> quand le client a demandé un accès.
-            Tony, Léa et Agenda sont toujours gratuits et n'ont pas besoin d'activation.
+            Tony, Bell et Léa sont toujours gratuits. Admin est réservé à Antoine uniquement.
           </div>
         </div>
       )}
@@ -190,9 +191,11 @@ export default function AgentsPage() {
                     <span style={badge(STATUS_COLORS[agent.status] || '#64748b')}>{agent.status}</span>
                     {ALWAYS_FREE.has(agent.name)
                       ? <span style={badge(FREE_COLOR)}>✓ Gratuit</span>
-                      : agent.is_premium
-                        ? <span style={badge(PREMIUM_COLOR)}>🔒 Premium</span>
-                        : null}
+                      : ADMIN_AGENTS.has(agent.name)
+                        ? <span style={badge("#ef4444")}>⚙️ Admin</span>
+                        : agent.is_premium
+                          ? <span style={badge(PREMIUM_COLOR)}>🔒 Premium</span>
+                          : null}
                     {agent.price_monthly_eur > 0 && (
                       <span style={{ fontSize: 11, color: '#64748b' }}>{agent.price_monthly_eur}€/mois</span>
                     )}

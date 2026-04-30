@@ -9,6 +9,8 @@ import ActivationsPage from "./components/ActivationsPage";
 import SourceManager from "./components/SourceManager";
 import SiteVitrinePage from "./components/SiteVitrinePage";
 import AdminChatPage from "./components/AdminChatPage";
+import DocsRequestsPage from "./components/DocsRequestsPage";
+import SubscriptionsPage from "./components/SubscriptionsPage";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://76.13.141.221:8002/api";
 
@@ -21,6 +23,8 @@ const NAV = [
   { id: "sources", label: "Sources", icon: "🔗" },
   { id: "vitrine", label: "Site Vitrine", icon: "🌐" },
   { id: "chat", label: "Chat Admin", icon: "💬" },
+  { id: "docs", label: "Demandes Docs", icon: "📄" },
+  { id: "subscriptions", label: "Abonnements", icon: "🔑" },
 ];
 
 export default function AdminDashboard() {
@@ -63,7 +67,7 @@ export default function AdminDashboard() {
     const fetchPending = async () => {
       const tok = localStorage.getItem('bvi_token') || '';
       try {
-        const res = await fetch(`${API}/activations?status=pending`, { headers: { Authorization: `Bearer ${tok}` } });
+        const res = await fetch(`${API.replace('/api', '')}/admin/license/pending`, { headers: { Authorization: `Bearer ${tok}` } });
         const data = await res.json();
         if (Array.isArray(data)) setPendingCount(data.length);
       } catch { }
@@ -156,7 +160,7 @@ export default function AdminDashboard() {
           <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
             {pendingCount > 0 && (
               <button onClick={() => setPage("activations")} style={{ padding: "4px 12px", borderRadius: 6, border: "none", background: "#f8717133", color: "#f87171", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>
-                🎁 {pendingCount} trial{pendingCount > 1 ? "s" : ""} en attente
+                🎁 {pendingCount} licence{pendingCount > 1 ? "s" : ""} en attente
               </button>
             )}
             <span style={{ color: "#475569" }}>{adminUser}</span>
@@ -183,6 +187,8 @@ export default function AdminDashboard() {
           )}
           {page === "vitrine" && <SiteVitrinePage />}
           {page === "chat" && <AdminChatPage />}
+          {page === "docs" && <DocsRequestsPage />}
+          {page === "subscriptions" && <SubscriptionsPage />}
         </div>
       </div>
     </div>

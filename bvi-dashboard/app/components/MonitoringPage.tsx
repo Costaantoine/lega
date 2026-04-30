@@ -45,12 +45,52 @@ export default function MonitoringPage() {
 
   const taskTotal = Object.values(data.tasks || {}).reduce((a: any, b: any) => a + Number(b), 0);
 
+  const users = data.users || {};
+  const subs  = data.subscriptions || {};
+  const topAgents = data.top_agents || [];
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2 style={{ margin: 0, fontSize: 20 }}>📊 Monitoring VPS</h2>
+        <h2 style={{ margin: 0, fontSize: 20 }}>📊 Monitoring LEGA</h2>
         <span style={{ fontSize: 12, color: '#64748b' }}>Mis à jour : {lastUpdate} (auto 10s)</span>
       </div>
+
+      {/* KPI métier */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+        {[
+          { label: 'Utilisateurs total', value: users.total ?? '—', color: '#e2e8f0' },
+          { label: 'Actifs aujourd\'hui', value: users.today ?? '—', color: '#60a5fa' },
+          { label: 'Actifs cette semaine', value: users.this_week ?? '—', color: '#a78bfa' },
+          { label: 'Abonnements actifs', value: (subs.active || 0) + (subs.trial || 0), color: '#4ade80' },
+          { label: 'Abonnements expirés', value: subs.expired ?? 0, color: '#f87171' },
+          { label: 'Activations en attente', value: data.pending_activations ?? 0,
+            color: (data.pending_activations || 0) > 0 ? '#fb923c' : '#4ade80' },
+        ].map(k => (
+          <div key={k.label} style={{ ...card(), textAlign: 'center' }}>
+            <div style={{ fontSize: 26, fontWeight: 700, color: k.color }}>{k.value}</div>
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>{k.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Top agents */}
+      {topAgents.length > 0 && (
+        <div style={card()}>
+          <strong style={{ display: 'block', marginBottom: 12 }}>🏆 Top agents (30j)</strong>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {topAgents.map((a: any, i: number) => {
+              const colors = ['#60a5fa','#4ade80','#a78bfa','#fb923c','#f87171','#94a3b8'];
+              return (
+                <div key={a.agent} style={{ background: '#0f172a', borderRadius: 8, padding: '8px 14px', textAlign: 'center', minWidth: 100 }}>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: colors[i] || '#94a3b8' }}>{a.count}</div>
+                  <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{a.agent}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* RAM */}
       <div style={card()}>
