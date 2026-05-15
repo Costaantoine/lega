@@ -1,0 +1,127 @@
+networks:
+  coolify:
+    external: true
+  bvi-net:
+    driver: bridge
+    name: bvi_bvi-net
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - bvi-pg-data:/var/lib/postgresql/data
+    networks:
+      - bvi-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./bvi-api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY}
+      DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      LOG_LEVEL: INFO
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      SITE_MANAGEMENT_MODE: ${SITE_MANAGEMENT_MODE:-manual}
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+      SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      TTS_ENABLED: ${TTS_ENABLED:-false}
+      AVATAR_ENABLED: ${AVATAR_ENABLED:-false}
+      AIIA_ENDPOINT: ${AIIA_ENDPOINT:-}
+      BRIEF_HOUR: ${BRIEF_HOUR:-7}
+      BRIEF_MINUTE: ${BRIEF_MINUTE:-0}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASS: ${ADMIN_PASS}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
+      CLIENT_DOMAIN: ${CLIENT_DOMAIN}
+      CLIENT_NAME: ${CLIENT_NAME}
+    volumes:
+      - bvi-docs:/app/docs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - bvi-net
+      - coolify
+    depends_on:
+      db:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bvi-api.rule=Host(`api.lega.pt`)"
+      - "traefik.http.routers.bvi-api.tls=true"
+      - "traefik.http.routers.bvi-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.bvi-api.loadbalancer.server.port=8000"
+
+  dashboard:
+    build:
+      context: ./bvi-dashboard
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_BVI_API_URL}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_BVI_WS_URL}
+    networks:
+      - bvi-net
+      - coolify
+    depends_on:
+      - api
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bvi-dashboard.rule=Host(`admin.lega.pt`)"
+      - "traefik.http.routers.bvi-dashboard.tls=true"
+      - "traefik.http.routers.bvi-dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.services.bvi-dashboard.loadbalancer.server.port=3000"
+
+  shop:
+    build:
+      context: ./bvi-shop
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_BVI_API_URL}
+    networks:
+      - bvi-net
+      - coolify
+    depends_on:
+      - api
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bvi-shop.rule=Host(`shop.lega.pt`)"
+      - "traefik.http.routers.bvi-shop.tls=true"
+      - "traefik.http.routers.bvi-shop.tls.certresolver=letsencrypt"
+      - "traefik.http.services.bvi-shop.loadbalancer.server.port=3000"
+
+  searxng:
+    image: searxng/searxng:2025.2.2-ab1e895cc
+    restart: unless-stopped
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    networks:
+      - bvi-net
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+
+volumes:
+  bvi-pg-data:
+    driver: local
+  bvi-docs:
+    driver: local
