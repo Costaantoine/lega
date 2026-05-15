@@ -1836,6 +1836,15 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
             "payload": _WAITING.get(lang, _WAITING["pt"]),
         })
 
+    # Pre-warm: ping Ollama pour charger gemma4:e2b en mémoire pendant le fetch catalogue
+    async def _prewarm():
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=5.0)) as c:
+                await c.post(f"{OLLAMA_URL}/api/chat", json={"model": model, "messages": [{"role":"user","content":"_"}], "num_predict": 1, "stream": False})
+        except Exception:
+            pass
+    asyncio.ensure_future(_prewarm())
+
     lang_instr = {
         "fr": "Réponds en français.",
         "pt": "Responde em português europeu (PT-PT).",
@@ -1890,7 +1899,8 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
     full_text = ""
     buf = ""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=5.0)) as client:
+        # Timeout 120s (cold start gemma4:e2b ~16s + catalogue 10s + TTS par phrase)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
             async with client.stream(
                 "POST", f"{OLLAMA_URL}/api/chat",
                 json={
@@ -1900,6 +1910,8 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
                     "options": {"temperature": 0.3, "num_predict": max_tokens},
                 },
             ) as resp:
+                if resp.status_code != 200:
+                    raise RuntimeError(f"Ollama HTTP {resp.status_code}")
                 async for line in resp.aiter_lines():
                     if not line:
                         continue
@@ -1952,7 +1964,9 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
         return any(w in final_text.lower() for w in _ESCALATE_KW)
 
     except Exception as e:
-        logger.error(f"lea_streaming error ({canal}): {e}")
+        import traceback as _tb
+        logger.error(f"lea_streaming error ({canal}): {type(e).__name__}: {e}")
+        logger.error(_tb.format_exc())
         fb = {
             "fr": "Je rencontre une difficulté technique. Veuillez réessayer.",
             "pt": "Encontrei uma dificuldade técnica. Por favor tente novamente.",
