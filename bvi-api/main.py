@@ -1845,18 +1845,35 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
             pass
     asyncio.ensure_future(_prewarm())
 
-    lang_instr = {
-        "fr": "Réponds en français.",
-        "pt": "Responde em português europeu (PT-PT).",
-        "en": "Reply in English.",
-        "es": "Responde en español.",
-        "de": "Antworte auf Deutsch.",
-        "it": "Rispondi in italiano.",
-        "ru": "Отвечай на русском.",
-        "ar": "أجب باللغة العربية.",
-        "nl": "Antwoord in het Nederlands.",
-        "zh": "用中文回答。",
-    }.get(lang, "Réponds en français.")
+    # Langue d'affichage pour les instructions (anglais neutre pour le LLM)
+    _lang_display = {
+        "pt": "European Portuguese (PT-PT)",
+        "fr": "French",
+        "en": "English",
+        "es": "Spanish",
+        "de": "German",
+        "it": "Italian",
+        "nl": "Dutch",
+        "ru": "Russian",
+        "ar": "Arabic",
+        "zh": "Chinese (Simplified)",
+    }
+    lang_display = _lang_display.get(lang, "European Portuguese (PT-PT)")
+
+    # "Prix sur demande" dans la langue cible
+    _price_on_request = {
+        "pt": "price on request",
+        "fr": "price on request",
+        "en": "price on request",
+        "es": "price on request",
+        "de": "price on request",
+        "it": "price on request",
+        "nl": "price on request",
+        "ru": "price on request",
+        "ar": "price on request",
+        "zh": "price on request",
+    }
+    por = _price_on_request.get(lang, "price on request")
 
     catalogue_ctx = ""
     try:
@@ -1869,31 +1886,32 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
                 lines = [
                     f"- {p.get('reference','') + ' ' if p.get('reference') else ''}{p['title']} : {p['price']} {p.get('currency','EUR')}"
                     if p.get("price") else
-                    f"- {p.get('reference','') + ' ' if p.get('reference') else ''}{p['title']} : prix sur demande"
+                    f"- {p.get('reference','') + ' ' if p.get('reference') else ''}{p['title']} : {por}"
                     for p in (items or [])
                 ]
                 if lines:
-                    catalogue_ctx = f"\nCATALOGUE ({total_count} annonces):\n" + "\n".join(lines)
+                    catalogue_ctx = f"\nCATALOGUE ({total_count} items):\n" + "\n".join(lines)
     except Exception:
         pass
 
     rules = (
-        "2 à 4 phrases. Ton chaleureux et professionnel. Ne pas inventer de machines ou prix. "
-        "Si demande complexe, mentionner le passage à Tony."
+        "2 to 4 sentences. Warm and professional tone. Do not invent machines or prices. "
+        "If request is complex, mention handoff to Tony."
         if is_voice else
-        "1 à 2 phrases MAXIMUM. Ton calme et professionnel. Zéro emoji. Réponse directe et naturelle."
+        "1 to 2 sentences MAXIMUM. Calm, professional tone. No emoji. Direct and natural response."
     )
     max_tokens = 300 if is_voice else 250
 
     prompt = (
-        f"Tu es Léa, assistante multilingue de LEGA.PT, spécialisée en engins de travaux publics d'occasion.\n"
-        f"Langue: {lang_instr}\n"
+        f"CRITICAL RULE: You MUST respond EXCLUSIVELY in {lang_display}. "
+        f"Never use French, English, or any other language unless {lang_display} IS that language.\n"
+        f"You are Léa, virtual assistant of LEGA.PT, specialized in used heavy construction equipment.\n"
+        f"LEGA.PT sells ONLY used construction equipment. We do NOT repair, maintain, rent, or sell spare parts. "
+        f"If the user asks for these services, politely explain in {lang_display} that we only sell used machines.\n"
         f"{catalogue_ctx}\n"
-        f"IMPORTANT: LEGA.PT vend uniquement des engins d'occasion. Nous ne faisons PAS de réparations, "
-        f"maintenance, location, ni pièces détachées. Si le client demande ces services, explique-lui "
-        f"poliment que nous ne proposons pas ce service et que nous vendons uniquement des machines TP d'occasion.\n"
-        f"RÈGLES: {rules}\n"
-        f"CLIENT: {message}\nLÉA:"
+        f"RULES: {rules}\n"
+        f"USER: {message}\n"
+        f"LÉIA (respond in {lang_display} only):"
     )
 
     full_text = ""
