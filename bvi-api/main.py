@@ -1815,7 +1815,26 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
         return
 
     is_voice = canal in ("phone", "whatsapp", "telegram", "voice")
-    model = AGENT_MODEL if is_voice else VITRINE_MODEL
+    model = AGENT_MODEL  # gemma4:e2b pour toutes les reponses
+
+    # Etape 1: message attente immediat avant fetch catalogue
+    if not is_voice:
+        _WAITING = {
+            "pt": "A processar a sua mensagem, respondo já...",
+            "fr": "Je traite votre demande, je reviens dans un instant...",
+            "en": "Processing your request, I'll be right back...",
+            "es": "Procesando su solicitud, respondo enseguida...",
+            "de": "Ich bearbeite Ihre Anfrage, bin gleich zurück...",
+            "it": "Sto elaborando la sua richiesta, rispondo subito...",
+            "nl": "Uw verzoek wordt verwerkt, ik kom zo terug...",
+            "ru": "Обрабатываю запрос, отвечу через мгновение...",
+            "ar": "جاري معالجة طلبك، سأرد في لحظة...",
+            "zh": "正在处理您的请求，马上回复...",
+        }
+        await websocket.send_json({
+            "type": "waiting_message",
+            "payload": _WAITING.get(lang, _WAITING["pt"]),
+        })
 
     lang_instr = {
         "fr": "Réponds en français.",
