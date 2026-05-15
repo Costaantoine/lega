@@ -1877,30 +1877,43 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
 
     catalogue_ctx = ""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.get(f"{LEGA_SITE_API}/products?status=available&limit=100")
-            if r.status_code == 200:
-                data = r.json()
-                items = data.get("items", data) if isinstance(data, dict) else data
-                total_count = data.get("total", len(items)) if isinstance(data, dict) else len(items)
-                lines = [
-                    f"- {p.get('reference','') + ' ' if p.get('reference') else ''}{p['title']} : {p['price']} {p.get('currency','EUR')}"
-                    if p.get("price") else
-                    f"- {p.get('reference','') + ' ' if p.get('reference') else ''}{p['title']} : {por}"
-                    for p in (items or [])
-                ]
-                if lines:
-                    catalogue_ctx = f"\nCATALOGUE ({total_count} items):\n" + "\n".join(lines)
+        conn = await db_connect()
+        try:
+            rows = await conn.fetch(
+                """SELECT title, category, year, hours, price, currency, location
+                   FROM site_products
+                   WHERE status = 'available'
+                   ORDER BY category, title
+                   LIMIT 120"""
+            )
+            if rows:
+                lines = []
+                for r in rows:
+                    price_str = f"{r['price']} {r['currency'] or 'EUR'}" if r["price"] else por
+                    details = []
+                    if r["year"]: details.append(str(r["year"]))
+                    if r["hours"]: details.append(f"{r['hours']}h")
+                    if r["location"]: details.append(r["location"])
+                    detail_str = (" | " + " | ".join(details)) if details else ""
+                    cat = r["category"] or "other"
+                    lines.append(f"- [{cat}] {r['title']}{detail_str} : {price_str}")
+                catalogue_ctx = f"\nCATALOGUE ({len(lines)} machines available — search this list to answer questions):\n" + "\n".join(lines)
+        finally:
+            await conn.close()
     except Exception:
         pass
 
     rules = (
-        "2 to 4 sentences. Warm and professional tone. Do not invent machines or prices. "
-        "If request is complex, mention handoff to Tony."
+        "2 to 4 sentences. Warm and professional tone. "
+        "Search the CATALOGUE above for machines matching the user's request. "
+        "If a category is not in the catalogue, say so honestly. "
+        "Give exact prices, years and hours from the catalogue."
         if is_voice else
-        "1 to 2 sentences MAXIMUM. Calm, professional tone. No emoji. Direct and natural response."
+        "1 to 2 sentences MAXIMUM. Search the CATALOGUE above. "
+        "Give exact price/year if available. "
+        "If the requested machine type is absent, say so briefly."
     )
-    max_tokens = 300 if is_voice else 250
+    max_tokens = 300 if is_voice else 300
 
     prompt = (
         f"CRITICAL RULE: You MUST respond EXCLUSIVELY in {lang_display}. "
@@ -1911,7 +1924,7 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
         f"{catalogue_ctx}\n"
         f"RULES: {rules}\n"
         f"USER: {message}\n"
-        f"LÉIA (respond in {lang_display} only):"
+        f"LÉIA (respond in {lang_display} only, reference exact machines from CATALOGUE above):"
     )
 
     full_text = ""
