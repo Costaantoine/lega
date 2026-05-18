@@ -40,6 +40,9 @@ SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 JWT_SECRET_CLIENT = os.getenv("JWT_SECRET_CLIENT", "lega-client-secret-2026")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "lega-media")
 
 app = FastAPI(title="LEGA Site API", version="1.0.0")
 app.mount("/uploads", StaticFiles(directory="/app/uploads"), name="uploads")
@@ -54,6 +57,20 @@ app.add_middleware(
 
 async def db_connect():
     return await asyncpg.connect(DB_URL)
+
+
+async def supabase_upload(data: bytes, path: str, content_type: str = "image/jpeg") -> str | None:
+    if not (SUPABASE_URL and SUPABASE_SERVICE_KEY):
+        return None
+    url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{path}"
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.post(url, content=data, headers={
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "Content-Type": content_type,
+            "x-upsert": "true",
+        })
+        r.raise_for_status()
+    return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{path}"
 
 
 # ── Notifications ─────────────────────────────────────────────────────────────
@@ -312,10 +329,15 @@ async def upload_product_image(product_id: str, file: UploadFile = File(...)):
     if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
         raise HTTPException(status_code=400, detail="Format non supporté")
     fname = f"{uuid.uuid4()}{ext}"
-    fpath = UPLOAD_DIR / fname
-    async with aiofiles.open(fpath, "wb") as f:
-        await f.write(await file.read())
-    url = f"/uploads/{fname}"
+    data = await file.read()
+    pub = await supabase_upload(data, f"products/{fname}", file.content_type or "image/jpeg")
+    if pub:
+        url = pub
+    else:
+        fpath = UPLOAD_DIR / fname
+        async with aiofiles.open(fpath, "wb") as f:
+            await f.write(data)
+        url = f"/uploads/{fname}"
     conn = await db_connect()
     try:
         row = await conn.fetchrow("SELECT images FROM site_products WHERE id=$1", uuid.UUID(product_id))
@@ -400,10 +422,15 @@ async def upload_site_asset(file: UploadFile = File(...), asset_type: str = "log
     if ext not in {".jpg", ".jpeg", ".png", ".webp", ".svg"}:
         raise HTTPException(400, "Format non supporté (jpg/png/webp/svg)")
     fname = f"{asset_type}_{uuid.uuid4().hex[:8]}{ext}"
-    fpath = UPLOAD_DIR / fname
-    async with aiofiles.open(fpath, "wb") as f:
-        await f.write(await file.read())
-    url = f"/uploads/{fname}"
+    data = await file.read()
+    pub = await supabase_upload(data, f"assets/{fname}", file.content_type or "image/jpeg")
+    if pub:
+        url = pub
+    else:
+        fpath = UPLOAD_DIR / fname
+        async with aiofiles.open(fpath, "wb") as f:
+            await f.write(data)
+        url = f"/uploads/{fname}"
     conn = await db_connect()
     try:
         await conn.execute(
@@ -875,10 +902,15 @@ async def add_hero_image(file: UploadFile = File(...), alt_text: str = ""):
     if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
         raise HTTPException(400, "Format non supporté (jpg/png/webp)")
     fname = f"hero_{uuid.uuid4().hex[:12]}{ext}"
-    fpath = HERO_UPLOAD_DIR / fname
-    async with aiofiles.open(fpath, "wb") as f:
-        await f.write(await file.read())
-    url = f"/uploads/hero/{fname}"
+    data = await file.read()
+    pub = await supabase_upload(data, f"hero/{fname}", file.content_type or "image/jpeg")
+    if pub:
+        url = pub
+    else:
+        fpath = HERO_UPLOAD_DIR / fname
+        async with aiofiles.open(fpath, "wb") as f:
+            await f.write(data)
+        url = f"/uploads/hero/{fname}"
     conn = await db_connect()
     try:
         max_pos = await conn.fetchval("SELECT COALESCE(MAX(position),0) FROM hero_images") or 0
