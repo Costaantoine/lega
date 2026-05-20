@@ -618,7 +618,7 @@ export default function LegaSite() {
                   padding: "14px 32px", background: C1, color: "#fff", border: "none",
                   borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer",
                 })}>
-                  {`Voir les ${total - 12} autres annonces →`}
+                  {`${T("load_more")} (${total - 12})`}
                 </button>
               </div>
             )}
