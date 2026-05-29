@@ -1,0 +1,48 @@
+{
+  "timestamp": "2026-05-29T19:17:37",
+  "total": 4,
+  "success": 3,
+  "failed": 1,
+  "results": [
+    {
+      "key": "tony",
+      "desc": "Tony (orchestrateur) — présentation générale",
+      "success": true,
+      "response_agent": "tony_interface",
+      "status": "ok",
+      "preview": "Je recherche des machines TP, rédige des emails et surveille le marché. Quelle est votre demande ?",
+      "thinking_count": 1,
+      "elapsed": 45.2
+    },
+    {
+      "key": "lea",
+      "desc": "Léa (standardiste vitrine) — question catalogue",
+      "success": false,
+      "response_agent": "timeout",
+      "status": "timeout",
+      "preview": "Aucune réponse après 120s",
+      "thinking_count": 0,
+      "elapsed": -1
+    },
+    {
+      "key": "cal",
+      "desc": "Cal (Agenda) — planning du jour",
+      "success": true,
+      "response_agent": "tony_interface",
+      "status": "ok",
+      "preview": "Je recherche des machines TP, rédige des emails et surveille le marché. Quelle est votre demande ?",
+      "thinking_count": 1,
+      "elapsed": 45.1
+    },
+    {
+      "key": "bell",
+      "desc": "Bell (standardiste voix) — demande mise en relation",
+      "success": true,
+      "response_agent": "?",
+      "status": "ok",
+      "preview": "Une erreur est survenue. Veuillez réessayer.",
+      "thinking_count": 1,
+      "elapsed": 45.1
+    }
+  ]
+}

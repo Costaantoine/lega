@@ -30,7 +30,7 @@ services:
       - "8002:8000"
     environment:
       DATABASE_URL: ${DATABASE_URL}
-      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_BASE_URL: http://10.0.3.1:11434
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY}
       DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL}
       JWT_SECRET: ${JWT_SECRET}

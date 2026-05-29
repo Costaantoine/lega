@@ -1,6 +1,8 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
 
+import { useSaveStatus } from '../hooks/useSaveStatus';
+
 const SITE_API = process.env.NEXT_PUBLIC_SITE_API_URL || 'http://76.13.141.221:8003/api/site';
 const tok = () => localStorage.getItem('bvi_token') || '';
 const ah = () => ({ Authorization: `Bearer ${tok()}` });
@@ -21,6 +23,8 @@ export default function SiteVitrinePage() {
   const [tab, setTab] = useState<Tab>('config');
   const [msg, setMsg] = useState('');
   const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
+  const { save: cfgSave, buttonStyle: cfgBtnStyle, buttonLabel: cfgBtnLabel } = useSaveStatus();
+  const { save: prodSave, buttonStyle: prodBtnStyle, buttonLabel: prodBtnLabel } = useSaveStatus();
 
   // ── Config ─────────────────────────────────────────────────────────────────
   const [cfg, setCfg] = useState<Record<string, string>>({});
@@ -37,13 +41,14 @@ export default function SiteVitrinePage() {
       }).catch(() => {});
   }, []);
 
-  const saveConfig = async () => {
+  const saveConfig = () => cfgSave(async () => {
     const changed: Record<string, string> = {};
     Object.entries(cfgDirty).forEach(([k, v]) => { if (v !== cfg[k]) changed[k] = v; });
-    if (!Object.keys(changed).length) { flash('Aucune modification'); return; }
-    await fetch(`${SITE_API}/config/bulk`, { method: 'POST', headers: ahj(), body: JSON.stringify(changed) });
+    if (!Object.keys(changed).length) return;
+    const res = await fetch(`${SITE_API}/config/bulk`, { method: 'POST', headers: ahj(), body: JSON.stringify(changed) });
+    if (!res.ok) throw new Error('Erreur serveur');
     setCfg({ ...cfg, ...changed }); flash(`✅ ${Object.keys(changed).length} champ(s) sauvegardé(s)`);
-  };
+  });
 
   const uploadAsset = async (type: 'logo' | 'hero', file: File) => {
     const fd = new FormData(); fd.append('file', file); fd.append('asset_type', type);
@@ -83,21 +88,20 @@ export default function SiteVitrinePage() {
   const openNew = () => { setEditProd(null); setForm({ title: '', category: 'machines_tp', brand: '', model: '', year: '', hours: '', price: '', currency: 'EUR', location: '', description: '', status: 'available', source_url: '' }); setShowForm(true); };
   const openEdit = (p: any) => { setEditProd(p); setForm({ title: p.title, category: p.category || 'machines_tp', brand: p.brand || '', model: p.model || '', year: p.year || '', hours: p.hours || '', price: p.price || '', currency: p.currency || 'EUR', location: p.location || '', description: p.description || '', status: p.status || 'available', source_url: p.source_url || '' }); setShowForm(true); };
 
-  const saveProduct = async () => {
+  const saveProduct = () => prodSave(async () => {
     const body = { ...form, year: form.year ? parseInt(form.year as any) : null, hours: form.hours ? parseInt(form.hours as any) : null, price: form.price ? parseFloat(form.price as any) : null, specs: {}, images: editProd?.images ? (typeof editProd.images === 'string' ? JSON.parse(editProd.images) : editProd.images) : [] };
-    if (editProd) {
-      await fetch(`${SITE_API}/products/${editProd.id}`, { method: 'PUT', headers: ahj(), body: JSON.stringify(body) });
-      flash('✅ Produit mis à jour');
-    } else {
-      await fetch(`${SITE_API}/products`, { method: 'POST', headers: ahj(), body: JSON.stringify(body) });
-      flash('✅ Produit créé');
-    }
+    const url = editProd ? `${SITE_API}/products/` + editProd.id : `${SITE_API}/products`;
+    const method = editProd ? 'PUT' : 'POST';
+    const res = await fetch(url, { method, headers: ahj(), body: JSON.stringify(body) });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || 'Erreur serveur'); }
+    flash(editProd ? '✅ Produit mis à jour' : '✅ Produit créé');
     setShowForm(false); loadProducts();
-  };
+  });
 
   const archiveProd = async (id: string) => {
     if (!confirm('Archiver ce produit ?')) return;
-    await fetch(`${SITE_API}/products/${id}`, { method: 'DELETE', headers: ah() });
+    const res = await fetch(`${SITE_API}/products/${id}`, { method: 'DELETE', headers: ah() });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); flash('✗ Erreur : ' + (e.detail || res.status)); return; }
     flash('🗑️ Archivé'); loadProducts();
   };
 
@@ -271,7 +275,7 @@ export default function SiteVitrinePage() {
               <input ref={heroRef} type="file" accept=".jpg,.jpeg,.png,.webp" onChange={e => e.target.files?.[0] && uploadAsset('hero', e.target.files[0])} style={{ fontSize: 13, color: '#94a3b8' }} />
             </div>
           </div>
-          <button onClick={saveConfig} style={{ padding: '10px 28px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 700, cursor: 'pointer', fontSize: 14 }}>💾 Sauvegarder la config</button>
+          <button onClick={saveConfig} style={cfgBtnStyle({ padding: '10px 28px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 700, cursor: 'pointer', fontSize: 14 })}>{cfgBtnLabel('💾 Sauvegarder la config')}</button>
         </div>
       )}
 
@@ -326,7 +330,7 @@ export default function SiteVitrinePage() {
                 </div>
               )}
               <div style={{ marginTop: 14, display: 'flex', gap: 10 }}>
-                <button onClick={saveProduct} disabled={!form.title} style={{ padding: '8px 20px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 7, fontWeight: 600, cursor: 'pointer' }}>💾 Enregistrer</button>
+                <button onClick={saveProduct} disabled={!form.title} style={prodBtnStyle({ padding: '8px 20px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 7, fontWeight: 600, cursor: 'pointer' })}>{prodBtnLabel('💾 Enregistrer')}</button>
                 <button onClick={() => setShowForm(false)} style={{ padding: '8px 16px', background: '#1e293b', border: '1px solid #334155', borderRadius: 7, color: '#94a3b8', cursor: 'pointer' }}>Annuler</button>
               </div>
             </div>
