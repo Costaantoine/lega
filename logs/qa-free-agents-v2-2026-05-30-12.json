@@ -1,0 +1,48 @@
+{
+  "timestamp": "2026-05-30T12:25:29",
+  "total": 4,
+  "success": 4,
+  "failed": 0,
+  "results": [
+    {
+      "key": "tony",
+      "desc": "Tony (orchestrateur) — présentation générale",
+      "success": true,
+      "response_agent": "tony_interface",
+      "status": "ok",
+      "preview": "Je peux vous aider ! Bonjour Tony, présentez-vous. Quel est votre problème ?",
+      "thinking_count": 1,
+      "elapsed": 27.3
+    },
+    {
+      "key": "lea",
+      "desc": "Léa (standardiste vitrine) — question catalogue",
+      "success": true,
+      "response_agent": "lea",
+      "status": "ok",
+      "preview": "Bonjour, je recherche une pelle sur chenilles pour chantier. Un exemple est le **Carmix 2.5T** (2007) à 40000 EUR.",
+      "thinking_count": 0,
+      "elapsed": 13.0
+    },
+    {
+      "key": "cal",
+      "desc": "Cal (Agenda) — planning du jour",
+      "success": true,
+      "response_agent": "cal",
+      "status": "delegated",
+      "preview": "✅ Demande transmise à cal [ref: 6db8150d]\nRésultat dans environ 10s.",
+      "thinking_count": 1,
+      "elapsed": 26.9
+    },
+    {
+      "key": "bell",
+      "desc": "Bell (standardiste voix) — demande mise en relation",
+      "success": true,
+      "response_agent": "bell",
+      "status": "delegated",
+      "preview": "✅ Demande transmise à bell [ref: b87bab63]\nRésultat dans environ 8s.",
+      "thinking_count": 1,
+      "elapsed": 7.8
+    }
+  ]
+}

@@ -35,6 +35,7 @@ LEA_MODEL = "qwen3:0.6b"
 AGENT_MODEL = "qwen3:8b"
 CAL_MODEL = "qwen3:0.6b"
 BELL_MODEL = "qwen3:0.6b"
+IRIS_MODEL = "minicpm-v"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -910,7 +911,7 @@ async def tony_dispatch(
                 asyncio.create_task(_save_conv_history(user_id, user_msg, response_text or "", lang))
             return
 
-        latency_map = {"scout": 180, "mel": 90, "iris": 10, "doc": 30, "admin": 15}
+        latency_map = {"scout": 180, "mel": 90, "iris": 55, "doc": 30, "admin": 15, "xray": 45}
         estimated   = latency_map.get(agent, 120)
 
         if agent == "admin" and not is_admin:
@@ -2207,6 +2208,87 @@ async def run_agenda(payload: dict, lang: str) -> str:
         return fallback.get(lang, fallback["fr"])
 
 
+async def run_iris(payload: dict, lang: str) -> str:
+    """Iris : analyse d'images et OCR via minicpm-v (vision model)."""
+    query = payload.get("message", "")
+    lang_instr = {"fr": "Français.", "pt": "Português europeu (PT-PT).", "en": "English."}.get(lang, "Français.")
+
+    prompt = f"""Tu es Iris, analyste vision et OCR de LEGA.
+Tu analyses des photos d'engins de travaux publics (pelleteuses, grues, chargeuses, bulldozers, etc.)
+pour en extraire : marque, modèle, année estimée, état général, présence de défauts visibles.
+Tu peux aussi lire des plaques signalétiques, badges et textes dans les images.
+
+Langue de réponse: {lang_instr}
+
+DEMANDE: {query}
+
+Si la demande concerne l'analyse d'une image, décris étape par étape ce que tu recherches.
+Si aucune image n'est fournie, explique comment l'utilisateur peut t'envoyer une photo à analyser.
+RÉPONSE:"""
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            res = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": IRIS_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False, "think": False,
+                    "options": {"temperature": 0.2, "num_predict": 500},
+                },
+            )
+            return res.json().get("message", {}).get("content", "Résultat indisponible.").strip()
+    except Exception as e:
+        logger.error(f"Iris (vision) error: {e}")
+        return f"⚠️ Erreur Iris: {str(e)[:100]}"
+
+
+async def run_xray(payload: dict, lang: str) -> str:
+    """Xray : extraction de spécifications techniques depuis des descriptions de machines TP."""
+    query = payload.get("message", "")
+    lang_instr = {"fr": "Français.", "pt": "Português europeu (PT-PT).", "en": "English."}.get(lang, "Français.")
+
+    prompt = f"""Tu es Xray, expert en extraction de spécifications techniques pour LEGA.
+Tu analyses des descriptions de machines de travaux publics pour en extraire les données structurées.
+
+FORMAT DE SORTIE (extrais TOUJOURS ces champs si présents):
+- Marque / Fabricant
+- Modèle
+- Année
+- Heures de fonctionnement
+- Poids (kg ou tonnes)
+- Type de machine (pelleteuse, chargeuse, grue, bulldozer, tombereau, compacteur, nacelle, etc.)
+- État général
+- Prix demandé (avec devise)
+- Localisation
+- Motorisation / Puissance
+- Équipements / Options
+- Certifications / Normes
+
+Langue de réponse: {lang_instr}
+
+TEXTE À ANALYSER:
+{query}
+
+EXTRACTION STRUCTURÉE:"""
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            res = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": AGENT_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False, "think": False,
+                    "options": {"temperature": 0.1, "num_predict": 600},
+                },
+            )
+            return res.json().get("message", {}).get("content", "Résultat indisponible.").strip()
+    except Exception as e:
+        logger.error(f"Xray extraction error: {e}")
+        return f"⚠️ Erreur Xray: {str(e)[:100]}"
+
+
 AGENT_EXECUTORS = {
     "scout": run_max_search,
     "mel": run_sam_comms,
@@ -2219,6 +2301,8 @@ AGENT_EXECUTORS = {
     "babel": run_traducteur,
     "nego": run_demandes_prix,
     "cal": run_agenda,
+    "iris": run_iris,
+    "xray": run_xray,
 }
 
 
