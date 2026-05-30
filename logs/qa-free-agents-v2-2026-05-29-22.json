@@ -1,0 +1,48 @@
+{
+  "timestamp": "2026-05-29T22:27:30",
+  "total": 4,
+  "success": 4,
+  "failed": 0,
+  "results": [
+    {
+      "key": "tony",
+      "desc": "Tony (orchestrateur) — présentation générale",
+      "success": true,
+      "response_agent": "tony_interface",
+      "status": "ok",
+      "preview": "Je recherche des machines TP, rédige des emails et surveille le marché. Quelle est votre demande ?",
+      "thinking_count": 1,
+      "elapsed": 45.1
+    },
+    {
+      "key": "lea",
+      "desc": "Léa (standardiste vitrine) — question catalogue",
+      "success": true,
+      "response_agent": "lea",
+      "status": "ok",
+      "preview": "Nous avons des pelles sur chenilles de marques Caterpillar et Case. Pourriez-vous préciser la taille ou le type de pelle que vous recherchez?",
+      "thinking_count": 0,
+      "elapsed": 34.0
+    },
+    {
+      "key": "cal",
+      "desc": "Cal (Agenda) — planning du jour",
+      "success": true,
+      "response_agent": "tony_interface",
+      "status": "ok",
+      "preview": "Je recherche des machines TP, rédige des emails et surveille le marché. Quelle est votre demande ?",
+      "thinking_count": 1,
+      "elapsed": 45.1
+    },
+    {
+      "key": "bell",
+      "desc": "Bell (standardiste voix) — demande mise en relation",
+      "success": true,
+      "response_agent": "?",
+      "status": "ok",
+      "preview": "Une erreur est survenue. Veuillez réessayer.",
+      "thinking_count": 1,
+      "elapsed": 45.1
+    }
+  ]
+}

@@ -30,11 +30,9 @@ logger = logging.getLogger(__name__)
 
 DB_URL = os.getenv("DATABASE_URL", "postgresql://bvi_user:BviSecure2026!@bvi-db:5432/bvi_db")
 OLLAMA_URL = os.getenv("OLLAMA_BASE_URL", "http://172.17.0.1:11434")
-TONY_MODEL = "qwen3:0.6b"
-LEA_MODEL = "qwen3:8b"
-AGENT_MODEL = "qwen3:8b"
-CAL_MODEL = "qwen3:0.6b"
-BELL_MODEL = "qwen3:0.6b"
+TONY_MODEL = "gemma2:2b"
+LEA_MODEL = "gemma2:2b"
+AGENT_MODEL = "gemma4:e2b"
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -77,7 +75,6 @@ TONY_AGENT_MAP: dict[str, str] = {
     "documentation": "doc", "logistique": "logi", "comptable": "compta",
     "traducteur": "babel", "demandes_prix": "nego", "site_manager": "admin",
     "lea_extract": "lea",
-    "agenda": "cal",
 }
 # Tous les noms valides dans agent_registry
 _VALID_AGENTS: set[str] = set(TONY_AGENT_MAP.values()) | {
@@ -126,7 +123,7 @@ TTS_ENABLED = os.getenv("TTS_ENABLED", "false").lower() == "true"
 AVATAR_ENABLED = os.getenv("AVATAR_ENABLED", "false").lower() == "true"
 AIIA_ENDPOINT = os.getenv("AIIA_ENDPOINT", "http://localhost:8003/tts")
 
-VITRINE_MODEL = "qwen3:8b"
+VITRINE_MODEL = "gemma2:2b"
 TTS_VOICES: dict[str, str] = {
     "fr": "fr-FR-DeniseNeural",
     "pt": "pt-PT-RaquelNeural",
@@ -412,13 +409,7 @@ def detect_language(text: str, client_lang: str = None) -> str:
     it_kw = {"escavatore","escavatori","gru","pala","bulldozer","cerco","prezzo",
              "comprare","vendere","buongiorno","salve","macchina"}
     nl_kw = {"graafmachine","kraan","lader","kopen","verkopen","zoek","prijs",
-             "hallo","goedendag","bulldozer","heftruck","wiellader"}
-    fr_kw = {"bonjour","pelleteuse","excavatrice","grue","tracteur","chargeuse",
-             "niveleuse","compacteur","tombereau","nacelle","engin","engins",
-             "machine","machines","travaux publics","tp","prix","recherche",
-             "transport","livraison","devis","catalogue","acheter","vendre",
-             "commercial","conseiller","parler","contact","demande","urgence",
-             "renseignement","combien","coût","tarif","puis","pouvez","voulez"}
+             "machine","hallo","goedendag","bulldozer"}
     scores = {
         "pt": sum(1 for w in pt_kw if w in t),
         "en": sum(1 for w in en_kw if w in t),
@@ -426,7 +417,6 @@ def detect_language(text: str, client_lang: str = None) -> str:
         "de": sum(1 for w in de_kw if w in t),
         "it": sum(1 for w in it_kw if w in t),
         "nl": sum(1 for w in nl_kw if w in t),
-        "fr": sum(1 for w in fr_kw if w in t),
     }
     best = max(scores, key=scores.get)
     if scores[best] > 0:
@@ -478,23 +468,6 @@ async def tony_classify(message: str, client_lang: str = None, history: list = N
                 _traducteur_kw = {"traduis","traduire","traduza","tradução","translation",
                                   "translate","traducir","en portugais","en français","en anglais",
                                   "in portuguese","in french","in english","em português","em francês"}
-                _agenda_kw = {"agenda","planning","événement","tâche prévue","today","brief",
-                              "calendrier","events","eventos","tarefas","aujourd'hui",
-                              "mon agenda","mon planning","ma journée","agenda du jour",
-                              "brief matinal","briefing","my schedule","meu dia",
-                              "que faire","quoi faire","programme du jour",
-                              "rendez-vous","réunion","reunião","meeting","compromisso"}
-                _standardiste_kw = {"parler à un commercial","parler à un conseiller",
-                                    "mise en relation","contact commercial","humain",
-                                    "conseiller","commercial","contacter","transfert",
-                                    "parler à quelqu'un","parler à une personne",
-                                    "être mis en relation","parler au patron",
-                                    "parler au gérant","parler à antoine",
-                                    "falar com um comercial","falar com um consultor",
-                                    "contactar comercial","transferir para humano",
-                                    "talk to a salesperson","talk to a human",
-                                    "speak to a representative","transfer to human",
-                                    "can i speak to","i want to talk to"}
                 if any(w in m_low for w in _logistique_kw):
                     result.update({"intent":"logistique","agent":"logistique","direct_response":None,
                         "estimated_delay":"15s",
@@ -511,14 +484,6 @@ async def tony_classify(message: str, client_lang: str = None, history: list = N
                     result.update({"intent":"traducteur","agent":"traducteur","direct_response":None,
                         "estimated_delay":"20s",
                         "ack_message": result.get("ack_message") or {"fr":"Je traduis le texte...","pt":"A traduzir o texto...","en":"Translating..."}.get(forced_lang,"Je traduis...")})
-                elif any(w in m_low for w in _agenda_kw):
-                    result.update({"intent":"agenda","agent":"agenda","direct_response":None,
-                        "estimated_delay":"10s",
-                        "ack_message": result.get("ack_message") or {"fr":"Je consulte votre agenda...","pt":"A consultar a sua agenda...","en":"Checking your agenda..."}.get(forced_lang,"Je consulte...")})
-                elif any(w in m_low for w in _standardiste_kw):
-                    result.update({"intent":"standardiste","agent":"bell","direct_response":None,
-                        "estimated_delay":"8s",
-                        "ack_message": result.get("ack_message") or {"fr":"Je vous mets en relation...","pt":"Vou transferir a chamada...","en":"Connecting you..."}.get(forced_lang,"Je vous mets en relation...")})
                 # Override site_manager (avant machine_kw)
                 _site_kw = {"ajoute produit","ajouter produit","ajoute une annonce","ajouter annonce",
                             "crée une fiche","créer fiche","nouveau produit","ajouter au catalogue",
@@ -541,7 +506,7 @@ async def tony_classify(message: str, client_lang: str = None, history: list = N
                     }
                     result["intent"] = "machine_search"
                     result["agent"] = "max_search"
-                    result["ack_message"] = result.get("ack_message") or ack_by_lang.get(forced_lang, "Je recherche...")
+                    result["ack_message"] = result.get("ack_message") or ack_by_lang[forced_lang]
                     result["estimated_delay"] = "2-4 min"
                     result["direct_response"] = None
                 # Override documentation_search si mots-clés doc présents
@@ -573,7 +538,7 @@ async def tony_classify(message: str, client_lang: str = None, history: list = N
                     }
                     result["intent"] = "modifier_site"
                     result["agent"] = "site_manager"
-                    result["ack_message"] = result.get("ack_message") or ack_by_lang.get(forced_lang, "Je modifie le site vitrine...")
+                    result["ack_message"] = result.get("ack_message") or ack_by_lang[forced_lang]
                     result["estimated_delay"] = "5s"
                     result["direct_response"] = None
                 return result
@@ -591,7 +556,7 @@ async def tony_classify(message: str, client_lang: str = None, history: list = N
         ack_by_lang = {"pt": "A pesquisar...", "en": "Searching...", "fr": "Je recherche..."}
         return {
             "intent": "machine_search", "lang": forced_lang, "agent": "max_search",
-            "ack_message": ack_by_lang.get(forced_lang, "Je recherche..."), "estimated_delay": "2-4 min",
+            "ack_message": ack_by_lang[forced_lang], "estimated_delay": "2-4 min",
             "direct_response": None,
         }
     _logistique_kw = {"coût transport","combien transport","transport de","transport d",
@@ -631,31 +596,6 @@ async def tony_classify(message: str, client_lang: str = None, history: list = N
         return {"intent":"traducteur","lang":forced_lang,"agent":"traducteur",
                 "ack_message":{"fr":"Je traduis le texte...","pt":"A traduzir o texto...","en":"Translating..."}.get(forced_lang,"Je traduis..."),
                 "estimated_delay":"20s","direct_response":None}
-    _agenda_kw = {"agenda","planning","événement","tâche prévue","today","brief",
-                  "calendrier","events","eventos","tarefas","aujourd'hui",
-                  "mon agenda","mon planning","ma journée","agenda du jour",
-                  "brief matinal","briefing","my schedule","meu dia",
-                  "que faire","quoi faire","programme du jour",
-                  "rendez-vous","réunion","reunião","meeting","compromisso"}
-    if any(w in m_low for w in _agenda_kw):
-        return {"intent":"agenda","lang":forced_lang,"agent":"agenda",
-                "ack_message":{"fr":"Je consulte votre agenda...","pt":"A consultar a sua agenda...","en":"Checking your agenda..."}.get(forced_lang,"Je consulte..."),
-                "estimated_delay":"10s","direct_response":None}
-    _standardiste_kw = {"parler à un commercial","parler à un conseiller",
-                        "mise en relation","contact commercial","humain",
-                        "conseiller","commercial","contacter","transfert",
-                        "parler à quelqu'un","parler à une personne",
-                        "être mis en relation","parler au patron",
-                        "parler au gérant","parler à antoine",
-                        "falar com um comercial","falar com um consultor",
-                        "contactar comercial","transferir para humano",
-                        "talk to a salesperson","talk to a human",
-                        "speak to a representative","transfer to human",
-                        "can i speak to","i want to talk to"}
-    if any(w in m_low for w in _standardiste_kw):
-        return {"intent":"standardiste","lang":forced_lang,"agent":"bell",
-                "ack_message":{"fr":"Je vous mets en relation...","pt":"Vou transferir a chamada...","en":"Connecting you..."}.get(forced_lang,"Je vous mets en relation..."),
-                "estimated_delay":"8s","direct_response":None}
     _site_kw = {"ajoute produit","ajouter produit","ajoute une annonce","ajouter annonce",
                 "crée une fiche","créer fiche","nouveau produit","ajouter au catalogue",
                 "modifie le statut","modifier le statut","passe le produit","mettre en vente",
@@ -1622,7 +1562,7 @@ RÉPONSE LÉA:"""
             res = await client.post(
                 f"{OLLAMA_URL}/api/chat",
                 json={
-                    "model": BELL_MODEL,
+                    "model": AGENT_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False, "think": False,
                     "options": {"temperature": 0.3, "num_predict": 300},
@@ -1630,7 +1570,7 @@ RÉPONSE LÉA:"""
             )
             return res.json().get("message", {}).get("content", "").strip()
     except Exception as e:
-        logger.error(f"Standardiste error [{type(e).__name__}]: {e}", exc_info=True)
+        logger.error(f"Standardiste error: {e}")
         fallback = {
             "fr": "Je vous transfère à notre assistant Tony, qui pourra mieux vous aider.",
             "pt": "Vou transferi-lo para o Tony, o nosso assistente especializado.",
@@ -2187,38 +2127,16 @@ JSON:"""
     return f"✅ {confirmation}"
 
 
-async def run_agenda(payload: dict, lang: str) -> str:
-    """Agent Agenda: répond aux questions sur le planning/agenda via build_morning_brief."""
-    try:
-        user_prefs = payload.get("preferences", {})
-        if isinstance(user_prefs, str):
-            try:
-                user_prefs = json.loads(user_prefs)
-            except Exception:
-                user_prefs = {}
-        return await build_morning_brief(lang=lang, user_prefs=user_prefs)
-    except Exception as e:
-        logger.error(f"run_agenda error: {e}")
-        fallback = {
-            "fr": "📅 Voici votre agenda du jour. Aucun événement planifié pour le moment.",
-            "pt": "📅 Aqui está a sua agenda de hoje. Sem eventos planeados de momento.",
-            "en": "📅 Here's your agenda for today. No events scheduled at the moment.",
-        }
-        return fallback.get(lang, fallback["fr"])
-
-
 AGENT_EXECUTORS = {
     "scout": run_max_search,
     "mel": run_sam_comms,
     "doc": run_documentation,
     "admin": run_site_manager,
     "lea": lambda payload, lang: run_standardiste(payload.get("message", ""), lang),
-    "bell": lambda payload, lang: run_standardiste(payload.get("message", ""), lang),
     "logi": run_logistique,
     "compta": run_comptable,
     "babel": run_traducteur,
     "nego": run_demandes_prix,
-    "cal": run_agenda,
 }
 
 
