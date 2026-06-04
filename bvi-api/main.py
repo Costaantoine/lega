@@ -51,8 +51,7 @@ ALWAYS_FREE_AGENTS = {"tony_interface", "standardiste", "lea", "vitrine_bot", "a
 # Agents verrouillés par défaut — activation manuelle via dashboard (code 191070)
 # Noms réels (agent_registry.name) — voir TONY_AGENT_MAP pour les alias legacy
 PREMIUM_AGENTS = {
-    "scout", "mel", "iris",
-    "logi", "compta", "babel", "nego", "doc", "xray",
+    # Mode test — tous les agents sont gratuits
 }
 
 # Code d'activation client (saisi dans le dashboard par l'admin)
@@ -447,17 +446,24 @@ async def tony_classify(message: str, client_lang: str = None, history: list = N
     no_greet = "\nIMPORTANT: L'utilisateur a déjà été accueilli. Ne jamais recommencer par Bonjour dans direct_response." if history else ""
     prompt = f"{TONY_SYSTEM}\n\n{lang_hint}\nForce lang=\"{forced_lang}\" in your JSON.{no_greet}\n\n{history_str}MESSAGE: {message}\n\nJSON:"
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=5.0)) as client:
-            res = await client.post(
-                f"{OLLAMA_URL}/api/chat",
-                json={
-                    "model": TONY_MODEL,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False, "think": False,
-                    "options": {"temperature": 0.1, "num_predict": 256},
-                },
-            )
-            raw = res.json().get("message", {}).get("content", "")
+        # DeepSeek d'abord, fallback Ollama
+        raw = ""
+        if AGENT_PROVIDER == "deepseek":
+            ds_result = await _call_deepseek(prompt, forced_lang, temperature=0.1, max_tokens=256)
+            if not ds_result.startswith("⚠️"):
+                raw = ds_result
+        if not raw:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=5.0)) as client:
+                res = await client.post(
+                    f"{OLLAMA_URL}/api/chat",
+                    json={
+                        "model": TONY_MODEL,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False, "think": False,
+                        "options": {"temperature": 0.1, "num_predict": 256},
+                    },
+                )
+                raw = res.json().get("message", {}).get("content", "")
             start = raw.find("{")
             end = raw.rfind("}") + 1
             if start >= 0 and end > start:
@@ -762,6 +768,29 @@ Si hors domaine → redirige poliment."""
 
 
 async def _ollama_quick(model: str, prompt: str, num_predict: int, timeout: float) -> str:
+    """Appelle DeepSeek si AGENT_PROVIDER=deepseek, fallback Ollama."""
+    if AGENT_PROVIDER == "deepseek":
+        try:
+            api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+            base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+            if api_key:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0)) as client:
+                    res = await client.post(
+                        f"{base_url}/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": "deepseek-chat",
+                            "messages": [{"role": "user", "content": prompt}],
+                            "temperature": 0.5,
+                            "max_tokens": num_predict,
+                            "stream": False,
+                        },
+                    )
+                    if res.status_code == 200:
+                        return res.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            logger.warning(f"_ollama_quick DeepSeek error: {e}")
+    # Fallback Ollama
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5.0)) as client:
         res = await client.post(
             f"{OLLAMA_URL}/api/chat",
@@ -971,25 +1000,16 @@ async def tony_dispatch(
 
                 upsell_msg = {
                     "fr": (
-                        f"🔒 L'agent <b>{agent}</b> est payant.\n\n"
-                        f"Tarif : <b>{price}</b> — accès 24h renouvelable.\n"
-                        f"Votre demande a été transmise à Antoine.\n"
-                        f"Vous serez notifié dès que l'accès est activé.\n\n"
-                        f"💡 Contactez-nous pour un accès immédiat."
+                        f"🔒 L'agent <b>{agent}</b> est payant. Tarif : <b>{price}</b>.\n"
+                        f"Contactez notre équipe pour un accès immédiat."
                     ),
                     "pt": (
-                        f"🔒 O agente <b>{agent}</b> é pago.\n\n"
-                        f"Tarifa : <b>{price}</b> — acesso 24h renovável.\n"
-                        f"O seu pedido foi transmitido a Antoine.\n"
-                        f"Será notificado assim que o acesso for ativado.\n\n"
-                        f"💡 Contacte-nos para acesso imediato."
+                        f"🔒 O agente <b>{agent}</b> é pago. Tarifa : <b>{price}</b>.\n"
+                        f"Contacte a nossa equipa para acesso imediato."
                     ),
                     "en": (
-                        f"🔒 The <b>{agent}</b> agent is a paid feature.\n\n"
-                        f"Rate : <b>{price}</b> — 24h renewable access.\n"
-                        f"Your request has been forwarded to Antoine.\n"
-                        f"You'll be notified once access is activated.\n\n"
-                        f"💡 Contact us for immediate access."
+                        f"🔒 The <b>{agent}</b> agent is a paid feature. Rate: <b>{price}</b>.\n"
+                        f"Contact our team for immediate access."
                     ),
                 }
                 await ws.send_json({
@@ -1030,20 +1050,15 @@ async def tony_dispatch(
         )
         logger.info(f"Task created: {task_id} → {agent}")
 
-        # Ack honnête : task réellement créée, task_id inclus
+        # Ack pro : pas de ref technique, délai réaliste
         delay_str = classification.get("estimated_delay", f"{estimated}s")
         ack_tpl = {
-            "fr": f"✅ Demande transmise à {agent} [ref: {task_id[:8]}]\nRésultat dans environ {delay_str}.",
-            "pt": f"✅ Pedido enviado para {agent} [ref: {task_id[:8]}]\nResultado em aproximadamente {delay_str}.",
-            "en": f"✅ Request sent to {agent} [ref: {task_id[:8]}]\nResult expected in {delay_str}.",
+            "fr": f"🔍 Je lance une recherche pour {agent}...\nJe reviens vers vous dans quelques instants.",
+            "pt": f"🔍 A iniciar pesquisa para {agent}...\nVolto já com os resultados.",
+            "en": f"🔍 Searching with {agent}...\nI'll be right back with results.",
         }
         ack = ack_tpl.get(lang, ack_tpl["fr"])
-        await ws.send_json({
-            "type": "agent_response",
-            "payload": ack,
-            "metadata": {"intent": intent, "lang": lang, "agent": agent, "status": "delegated", "task_id": task_id},
-        })
-
+        # Pas d'ACK — la réponse arrive directement du worker via le WS
         # Sauvegarder échange dans historique local + DB
         if conv_hist is not None:
             conv_hist.append({"role": "assistant", "content": ack})
@@ -1170,8 +1185,82 @@ JSON:"""
     return stored
 
 
+# ── Agent Providers ──────────────────────────────────────────────────────────
+
+AGENT_PROVIDER = os.getenv("AGENT_PROVIDER", "deepseek").lower()
+
+async def _call_deepseek(prompt: str, lang: str = "fr", temperature: float = 0.3, max_tokens: int = 800) -> str:
+    """Appelle DeepSeek API pour la synthèse. Fallback silencieux."""
+    api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+    base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    
+    if not api_key:
+        return "⚠️ API non configurée."
+
+    lang_instr = "Réponds en français." if lang == "fr" else ("Réponds en portugais européen (PT-PT)." if lang == "pt" else "Answer in English.")
+    
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            res = await client.post(
+                f"{base_url}/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "deepseek-chat",
+                    "messages": [
+                        {"role": "system", "content": f"Tu es Max Search, expert en recherche de machines TP. {lang_instr}"},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "stream": False,
+                },
+            )
+            if res.status_code == 200:
+                return res.json()["choices"][0]["message"]["content"]
+            else:
+                logger.error(f"DeepSeek API HTTP {res.status_code}: {res.text[:200]}")
+                return f"⚠️ Erreur API: {res.status_code}"
+    except Exception as e:
+        logger.warning(f"DeepSeek API error: {e}")
+        return f"⚠️ Erreur API: {str(e)[:100]}"
+
+
+async def _call_ollama(prompt: str, model: str = None, temperature: float = 0.3, max_tokens: int = 800) -> str:
+    """Appelle Ollama. Fallback pour l'agent gratuit."""
+    model = model or AGENT_MODEL
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
+            res = await client.post(
+                f"{OLLAMA_URL}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False, "think": False,
+                    "options": {"temperature": temperature, "num_predict": max_tokens},
+                },
+            )
+            return res.json().get("message", {}).get("content", "Résultat indisponible.")
+    except Exception as e:
+        logger.warning(f"Ollama error: {e}")
+        raise
+
+
+async def call_llm(prompt: str, lang: str = "fr", temperature: float = 0.3, max_tokens: int = 800) -> str:
+    """Appelle le LLM configuré (AGENT_PROVIDER). Fallback automatique."""
+    if AGENT_PROVIDER == "deepseek":
+        result = await _call_deepseek(prompt, lang, temperature, max_tokens)
+        if not result.startswith("⚠️"):
+            return result
+        logger.warning("DeepSeek échoué, fallback Ollama...")
+    # Fallback Ollama
+    return await _call_ollama(prompt, temperature=temperature, max_tokens=max_tokens)
+
+
 async def run_max_search(payload: dict, lang: str) -> str:
-    """Max Search: recherche machines TP (gemma4:e2b)."""
+    """Max Search: recherche machines TP (Ollama)."""
     query = payload.get("message", "")
     user_id = payload.get("user_id", "")
     task_id = payload.get("task_id", str(uuid.uuid4()))
@@ -1180,64 +1269,67 @@ async def run_max_search(payload: dict, lang: str) -> str:
 
     # Nettoyer la query pour SearXNG : retirer verbes de recherche en tête + limiter à 80 chars
     import re as _re
-    q_search = _re.sub(r'^(?:recherche[rz]?|trouve[rz]?|cherche[rz]?|find|search|pesquisa[rz]?)\s+',
-                       '', query, flags=_re.IGNORECASE).strip()[:80]
+    q_search = _re.sub(r'^(?:recherche[rz]?|trouve[rz]?|cherche[rz]?|find|search|pesquisa[rz]?)\\s+',
+                       '', query, flags=_re.IGNORECASE).strip()[:120]
     _machine_terms = {'pelleteuse','pelle','komatsu','caterpillar','volvo','jcb','hitachi',
                       'excavateur','chargeuse','bulldozer','compacteur','tombereau','grue'}
     if any(t in q_search.lower() for t in _machine_terms) and 'occasion' not in q_search.lower():
         q_search += ' occasion vente'
-    # Désambiguïsation : brand+model en tête, puis type machine, évite jardinage
     if any(t in q_search.lower() for t in _machine_terms):
         if 'engin' not in q_search.lower() and 'tp' not in q_search.lower():
             q_search += ' excavateur engin TP annonce avec photo'
 
-    listings = []
+    # 1. Tous les sites (Sodineg + Europe-TP + MachineryZone)
+    all_results = []
     try:
-        listings = await web_utils.search_smart(q_search, max_results=5)
+        all_results = await web_utils.search_all_sites(query, max_results=15)
     except Exception:
         pass
 
+    # 2. SearXNG web (recherche générale)
     listings_web = []
     try:
         listings_web = await web_utils.search_web(q_search, max_results=8, lang=lang)
     except Exception:
         pass
 
-    listings_text = "\n".join([f"- {l['title']} | {l.get('price','N/A')}" for l in listings]) if listings else "Aucune annonce directe trouvée."
+    # Formater les résultats par source
+    sources_text = {}
+    for r in all_results:
+        src = r.get("source", "Inconnu")
+        if src not in sources_text:
+            sources_text[src] = []
+        parts = [r["title"]]
+        if r.get("price"):
+            parts.append(r["price"])
+        if r.get("annee"):
+            parts.append(f"{r['annee']}")
+        if r.get("heures"):
+            parts.append(f"{r['heures']}h")
+        sources_text[src].append("• " + " | ".join(parts))
 
-    prompt = f"""Tu es Max Search, expert en recherche de machines TP pour le marché France→Portugal.
-Langue de réponse: {lang_instr}
+    prompt_parts = []
+    for src, lines in sources_text.items():
+        prompt_parts.append(f"🏪 {src}:")
+        prompt_parts.extend(lines)
 
-📚 BASE DE CONNAISSANCES:
-{context}
+    all_listings_text = "\n".join(prompt_parts) if prompt_parts else "Aucune annonce trouvée."
 
-🔍 ANNONCES RÉCENTES (tob.pt):
-{listings_text}
+    prompt = f"""Recherche machines TP pour le marché France→Portugal.
+Langue: {lang_instr}
 
-🎯 DEMANDE CLIENT: {query}
+Annonces disponibles :
+{all_listings_text}
 
-Génère une réponse structurée:
-🔍 RÉSULTATS TROUVÉS
-• Liste des machines correspondantes avec prix estimé
-📊 ANALYSE MARCHÉ
-• Fourchette de prix constatée, tendances
-💡 RECOMMANDATIONS
-• Conseils d'achat, transport Portugal, vigilance
-🔗 SOURCES À CONSULTER
-• 2-3 sources pertinentes du contexte"""
+Demande client : {query}
+
+Réponds sans te présenter. Structure par ligne, sans ### ni --- :
+- Machines trouvées : prix, année, heures, source
+- Prix constatés
+- Recommandations"""
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
-            res = await client.post(
-                f"{OLLAMA_URL}/api/chat",
-                json={
-                    "model": AGENT_MODEL,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False, "think": False,
-                    "options": {"temperature": 0.3, "num_predict": 800},
-                },
-            )
-            result_text = res.json().get("message", {}).get("content", "Résultat indisponible.")
+        result_text = await call_llm(prompt, lang, temperature=0.3, max_tokens=800)
 
         # Parser et stocker les annonces APRÈS la réponse LLM
         if user_id:
@@ -1247,7 +1339,8 @@ Génère une réponse structurée:
         return result_text
     except Exception as e:
         logger.error(f"Max Search error: {e}")
-        return f"⚠️ Erreur Max Search: {str(e)[:100]}"
+        return ("⚠️ Désolé, la recherche n'a pas pu aboutir. "
+                "Veuillez reformuler votre demande ou réessayer.")
 
 
 def _smtp_send(to_addr: str, subject: str, body: str) -> None:
@@ -1619,19 +1712,9 @@ DEMANDE: {message}
 RÉPONSE LÉA:"""
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-            res = await client.post(
-                f"{OLLAMA_URL}/api/chat",
-                json={
-                    "model": BELL_MODEL,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False, "think": False,
-                    "options": {"temperature": 0.3, "num_predict": 300},
-                },
-            )
-            return res.json().get("message", {}).get("content", "").strip()
+        return await _ollama_quick(BELL_MODEL, prompt, 300, 30.0)
     except Exception as e:
-        logger.error(f"Standardiste error [{type(e).__name__}]: {e}", exc_info=True)
+        logger.warning(f"Standardiste error [{type(e).__name__}]: {e}")
         fallback = {
             "fr": "Je vous transfère à notre assistant Tony, qui pourra mieux vous aider.",
             "pt": "Vou transferi-lo para o Tony, o nosso assistente especializado.",
@@ -2007,17 +2090,8 @@ async def run_lea_streaming(message: str, lang: str, canal: str, websocket: "Web
     )
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=30.0)) as c:
-            r = await c.post(f"{OLLAMA_URL}/api/chat", json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False, "think": False,
-                "options": {"temperature": 0.3, "num_predict": 300},
-            })
-            if r.status_code != 200:
-                raise RuntimeError(f"Ollama HTTP {r.status_code}")
-            reply = r.json().get("message", {}).get("content", "")
-            final_text = re.sub(r'\s+', ' ', reply).strip()
+        reply = await _ollama_quick(model, prompt, 300, 90.0)
+        final_text = re.sub(r'\s+', ' ', reply).strip()
 
         await websocket.send_json({
             "type": "agent_response",
@@ -2453,15 +2527,6 @@ async def task_worker():
                                         **extra_meta,
                                     },
                                 })
-                                # Notification Tony + refresh panel si annonces trouvées
-                                if search_count > 0:
-                                    tony_notif = {
-                                        "fr": f"✅ Max a trouvé {search_count} annonce(s).\nDisponibles dans l'onglet 📋 Annonces.",
-                                        "pt": f"✅ Max encontrou {search_count} anúncio(s).\nDisponíveis no separador 📋 Anúncios.",
-                                        "en": f"✅ Max found {search_count} listing(s).\nAvailable in the 📋 Listings tab.",
-                                    }.get(lang, f"✅ Max a trouvé {search_count} annonce(s).\nDisponibles dans l'onglet 📋 Annonces.")
-                                    await ws.send_json({"type": "agent_response", "payload": tony_notif, "metadata": {"agent": "tony", "done": True}})
-                                    await ws.send_json({"type": "search_results_ready", "payload": search_count})
                             except Exception as e:
                                 logger.warning(f"WS push failed: {e}")
                     except Exception as e:
@@ -2891,12 +2956,7 @@ async def chat_rest(message: dict):
     system_prompt = "Tu es un expert en sourcing de machines TP pour l'export France→Portugal. Réponds en français, cite les sources du contexte."
     full_prompt = f"{system_prompt}\n\n📚 CONTEXTE:\n{context}\n\n❓ QUESTION: {user_msg}\n\n✅ RÉPONSE:"
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
-            res = await client.post(
-                f"{OLLAMA_URL}/api/chat",
-                json={"model": TONY_MODEL, "messages": [{"role": "user", "content": full_prompt}], "stream": False, "think": False, "options": {"temperature": 0.3, "num_predict": 2048}},
-            )
-            reply = res.json().get("message", {}).get("content", "Pas de réponse")
+        reply = await _ollama_quick(TONY_MODEL, full_prompt, 2048, 180.0)
         return {"content": reply, "model": TONY_MODEL}
     except Exception as e:
         return {"content": f"Erreur: {str(e)[:100]}", "model": TONY_MODEL}
@@ -3017,9 +3077,8 @@ Format:
 ⚠️ Points de vigilance
 Sois concis et réaliste."""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0)) as client:
-            res = await client.post(f"{OLLAMA_URL}/api/chat", json={"model": TONY_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False, "think": False, "options": {"temperature": 0.3, "num_predict": 500}})
-            return {"crew": "devis", "result": res.json().get("message", {}).get("content", "Erreur"), "model": TONY_MODEL}
+        reply = await _ollama_quick(TONY_MODEL, prompt, 500, 90.0)
+        return {"crew": "devis", "result": reply, "model": TONY_MODEL}
     except Exception as e:
         return {"crew": "devis", "error": str(e)[:100]}
 
@@ -3043,9 +3102,8 @@ Format:
 ✅ ÉTAT & POINTS FORTS
 💶 PRIX CONSEILLÉ (€ HT)
 📝 DESCRIPTION VENDEUR (3-4 lignes)"""
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0)) as client:
-            res = await client.post(f"{OLLAMA_URL}/api/chat", json={"model": TONY_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False, "think": False, "options": {"temperature": 0.3, "num_predict": 400}})
-            return {"crew": "fiche", "result": res.json().get("message", {}).get("content", "Erreur"), "model": TONY_MODEL, "lang": lang}
+        reply = await _ollama_quick(TONY_MODEL, prompt, 400, 90.0)
+        return {"crew": "fiche", "result": reply, "model": TONY_MODEL, "lang": lang}
 
 
 @app.post("/api/crew/argus")
@@ -3062,9 +3120,8 @@ async def crew_argus(request: dict):
         prompt = f"""Expert estimation machines TP. Estimation prix pour : "{machine}"
 Langue: {lang_instr}
 Donne: Fourchette basse/haute, facteurs influençant le prix, conseil de mise en vente."""
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0)) as client:
-            res = await client.post(f"{OLLAMA_URL}/api/chat", json={"model": TONY_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False, "think": False, "options": {"temperature": 0.4, "num_predict": 350}})
-            return {"crew": "argus", "result": res.json().get("message", {}).get("content", "Erreur"), "model": TONY_MODEL, "lang": lang}
+        reply = await _ollama_quick(TONY_MODEL, prompt, 350, 90.0)
+        return {"crew": "argus", "result": reply, "model": TONY_MODEL, "lang": lang}
 
 
 @app.post("/api/crew/veille")
@@ -3082,9 +3139,8 @@ Annonces tob.pt:
 {listings_text}
 Génère: 1) 3 alertes basées sur ces annonces, 2) Conseils prix, 3) Message client prêt à envoyer."""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0)) as client:
-            res = await client.post(f"{OLLAMA_URL}/api/chat", json={"model": TONY_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False, "think": False, "options": {"temperature": 0.4, "num_predict": 400}})
-            return {"crew": "veille", "result": res.json().get("message", {}).get("content", "Erreur"), "model": TONY_MODEL, "lang": lang, "sources": listings}
+        reply = await _ollama_quick(TONY_MODEL, prompt, 400, 90.0)
+        return {"crew": "veille", "result": reply, "model": TONY_MODEL, "lang": lang, "sources": listings}
     except Exception as e:
         return {"crew": "veille", "error": str(e)[:100]}
 
@@ -3938,3 +3994,49 @@ async def get_site_mode():
         "agent_enabled": SITE_MANAGEMENT_MODE == "agent",
         "description": "Gestion automatique par agents" if SITE_MANAGEMENT_MODE == "agent" else "Gestion manuelle via dashboard",
     }
+
+# ══════════════════════════════════════════
+# Scrapling — Scraping puissant pour agents LEGA
+# ══════════════════════════════════════════
+
+@app.get("/api/scrapling/search")
+async def scrapling_search(query: str, pages: int = 1, details: bool = False):
+    """Recherche via Scrapling (StealthyFetcher).
+    Les agents LEGA (Scout, Max) peuvent appeler cette route.
+    Retourne une liste d'entreprises avec URLs.
+    """
+    import subprocess, json, os
+    script = "/app/scraping.py"
+    if not os.path.exists(script):
+        return {"error": "Script scraping.py pas trouve"}
+    try:
+        result = subprocess.run(
+            ["python3", script, query, "--pages", str(pages),
+             "--details" if details else "", "--output", "/tmp/scrapling_result"],
+            capture_output=True, text=True, timeout=120
+        )
+        # Lire le fichier JSON genere
+        import glob
+        files = glob.glob("/tmp/scrapling_result*.json")
+        if files:
+            with open(files[-1]) as f:
+                data = json.load(f)
+            return {"results": data, "count": len(data), "log": result.stdout[-500:]}
+        return {"error": "Pas de resultats", "log": result.stdout[-500:], "stderr": result.stderr[-500:]}
+    except subprocess.TimeoutExpired:
+        return {"error": "Timeout 120s"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/scrapling/fournisseurs")
+async def scrapling_fournisseurs():
+    """Retourne la liste des fournisseurs LEGA (Bordeaux)."""
+    import json, os
+    csv_path = "/app/lega_fournisseurs_20260603.csv"
+    if not os.path.exists(csv_path):
+        return {"error": "Fichier fournisseurs pas trouve"}
+    import csv
+    with open(csv_path) as f:
+        reader = csv.DictReader(f)
+        fournisseurs = list(reader)
+    return {"fournisseurs": fournisseurs, "count": len(fournisseurs)}
