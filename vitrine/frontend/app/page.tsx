@@ -123,6 +123,7 @@ export default function LegaSite() {
   const [isMobile, setIsMobile]       = useState(false);
   const [navOpen, setNavOpen]         = useState(false);
   const [langOpen, setLangOpen]       = useState(false);
+  const [csLangOpen, setCsLangOpen]   = useState(false);
   const [showAll, setShowAll]         = useState(false);
 
   // Mode preview : ?preview=true affiche le site complet (pour dev/admin)
@@ -380,27 +381,74 @@ export default function LegaSite() {
   if (!isPreview) {
     return (
       <div style={s({ minHeight: "100vh", background: "#f8fafc", overflow: "hidden" })}>
-        {/* ── Language selector flottant ── */}
+        {/* ── Language selector — responsive ── */}
         <div style={s({
           position: "fixed", top: 16, right: 16, zIndex: 100,
-          display: "flex", gap: 6,
+          ...(isMobile ? {} : { display: "flex", gap: 6 }),
         })}>
-          {LANGS.map(l => (
-            <button key={l.code} onClick={() => setLang(l.code)}
-              style={s({
-                display: "flex", alignItems: "center", gap: 4,
-                padding: "6px 10px", border: "none", borderRadius: 6,
-                cursor: "pointer", fontSize: 12, fontWeight: 600,
-                background: lang === l.code ? C2 : "rgba(0,0,0,0.35)",
-                color: lang === l.code ? "#fff" : "rgba(255,255,255,0.8)",
-                backdropFilter: "blur(4px)",
-              })}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={l.flag} alt={l.short} width={20} height={15}
-                style={{ borderRadius: "2px", objectFit: "cover" }} />
-              {l.short}
-            </button>
-          ))}
+          {isMobile ? (
+            <>
+              <button onClick={() => setCsLangOpen(o => !o)}
+                style={s({
+                  display: "flex", alignItems: "center", gap: 4,
+                  padding: "8px 12px", border: "none", borderRadius: 8,
+                  cursor: "pointer", fontSize: 13, fontWeight: 600,
+                  background: "rgba(0,0,0,0.35)",
+                  color: "#fff", backdropFilter: "blur(4px)",
+                })}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={LANGS.find(l => l.code === lang)?.flag || "/flags/fr.png"}
+                  alt="" width={22} height={16}
+                  style={{ borderRadius: "2px", objectFit: "cover" }} />
+                {LANGS.find(l => l.code === lang)?.short || "FR"}
+                <span style={{ marginLeft: 4, fontSize: 10 }}>{csLangOpen ? "▲" : "▼"}</span>
+              </button>
+              {csLangOpen && (
+                <div style={s({
+                  position: "absolute", top: 48, right: 0,
+                  background: "rgba(15,20,30,0.92)",
+                  backdropFilter: "blur(8px)",
+                  borderRadius: 10, padding: 6,
+                  display: "flex", flexDirection: "column", gap: 2,
+                  minWidth: 160, boxShadow: "0 8px 30px rgba(0,0,0,0.4)",
+                })}>
+                  {LANGS.map(l => (
+                    <button key={l.code} onClick={() => { setLang(l.code); setCsLangOpen(false); }}
+                      style={s({
+                        display: "flex", alignItems: "center", gap: 10,
+                        padding: "10px 14px", border: "none", borderRadius: 8,
+                        cursor: "pointer", fontSize: 15,
+                        background: lang === l.code ? C2 : "transparent",
+                        color: "#fff", textAlign: "left", fontWeight: lang === l.code ? 700 : 400,
+                      })}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={l.flag} alt={l.short} width={24} height={18}
+                        style={{ borderRadius: "2px", objectFit: "cover" }} />
+                      <span>{l.label}</span>
+                      {lang === l.code && <span style={{ marginLeft: "auto" }}>✓</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            LANGS.map(l => (
+              <button key={l.code} onClick={() => setLang(l.code)}
+                style={s({
+                  display: "flex", alignItems: "center", gap: 4,
+                  padding: "6px 10px", border: "none", borderRadius: 6,
+                  cursor: "pointer", fontSize: 12, fontWeight: 600,
+                  background: lang === l.code ? C2 : "rgba(0,0,0,0.35)",
+                  color: lang === l.code ? "#fff" : "rgba(255,255,255,0.8)",
+                  backdropFilter: "blur(4px)",
+                })}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={l.flag} alt={l.short} width={20} height={15}
+                  style={{ borderRadius: "2px", objectFit: "cover" }} />
+                {l.short}
+              </button>
+            ))
+          )}
         </div>
 
         <HeroCarousel siteBase={SITE_BASE} colorPrimary={C1} colorSecondary={C2}>
