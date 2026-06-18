@@ -1,18 +1,15 @@
-# CLAUDE.md — lega
+# Project Context — lega
 
-## What Is This Project?
+## Summary
 
 `lega` built with typescript, python, javascript, shell (monorepo architecture) with 8 module(s) and 21 dependencies.
 
-## Quick Reference
+## Languages
 
-- **Entry point**: `bvi-api/main.py`
-- **Entry point**: `vitrine/backend/main.py`
-- **Languages**: typescript, python, javascript, shell
-- **Architecture**: monorepo
-- **Modules**: 8
-- **Dependencies**: 21
-- **Last scanned**: 2026-06-18 08:11:26.569675+00:00
+- typescript
+- python
+- javascript
+- shell
 
 ## Architecture
 
@@ -28,26 +25,6 @@
 - `bvi-shop` — bvi-shop
 
 **Infrastructure:** Docker
-
-## Build & Run
-
-```bash
-cd bvi-api && pip install -r requirements.txt
-cd bvi-dashboard && npm run dev
-cd bvi-shop && npm run dev
-```
-
-## Conventions
-
-- **Naming:** mixed
-- **File Organization:** flat
-- **Import Style:** absolute
-- **Test Pattern:** `test_*.py`
-- **Patterns:** helper, model
-
-**Examples from codebase:**
-- Functions: `search_sources`, `KB_PATH`, `parse_robust`, `parse_codimatra`, `logger`
-- Classes: `ScraperHandler`, `BROWSER`, `ProductCreate`, `ProductUpdate`, `AgentSiteAction`
 
 ## Modules
 
@@ -249,6 +226,18 @@ cd bvi-shop && npm run dev
 | @types/react | 19.2.14 | npm |
 | typescript | 6.0.2 | npm |
 
+## Conventions
+
+- **Naming:** mixed
+- **File Organization:** flat
+- **Import Style:** absolute
+- **Test Pattern:** `test_*.py`
+- **Patterns:** helper, model
+
+**Examples from codebase:**
+- Functions: `search_sources`, `KB_PATH`, `parse_robust`, `parse_codimatra`, `logger`
+- Classes: `ScraperHandler`, `BROWSER`, `ProductCreate`, `ProductUpdate`, `AgentSiteAction`
+
 ## Git Insights
 
 - **Branch:** `main`
@@ -278,3 +267,10 @@ cd bvi-shop && npm run dev
 - `docker-compose.yml`
 - `lega_fournisseurs_20260603.csv`
 - `logs/qa-free-agents-v2-2026-05-30-12.json`
+
+## Scan Metadata
+
+- **Scanned at:** 2026-06-18 08:11:26.569675+00:00
+- **Tool version:** 0.1.0
+- **Git SHA:** `8a7a82c0e1449d2d7d1b5920617f7e7c1ea35f40`
+- **Scan duration:** 0.368s

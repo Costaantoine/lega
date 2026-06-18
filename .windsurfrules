@@ -1,0 +1,61 @@
+# Windsurf Rules — lega
+
+## Project Context
+
+`lega` built with typescript, python, javascript, shell (monorepo architecture) with 8 module(s) and 21 dependencies.
+
+## Rules
+
+### Naming & Style
+- Naming convention: **mixed**
+- Import style: **absolute**
+- File organization: **flat**
+
+### Testing
+- Test pattern: `test_*.py`
+
+### Design Patterns
+- helper
+- model
+
+### Python
+- Type hints on all function signatures
+- Google-style docstrings on public APIs
+- No bare `except:` clauses
+
+### JavaScript/TypeScript
+- Prefer `const` over `let`
+- Use async/await
+- Avoid `any` type where possible
+
+## Architecture
+
+**Type:** monorepo
+
+**Entry Points:**
+- `bvi-api/main.py`
+- `vitrine/backend/main.py`
+
+**Services:**
+- `bvi-api` — bvi-api
+- `bvi-dashboard` — bvi-dashboard
+- `bvi-shop` — bvi-shop
+
+**Infrastructure:** Docker
+
+## File Structure
+
+- `bvi-api/` [python]
+- `bvi-dashboard/` [typescript]
+- `bvi-shop/` [typescript]
+- `docs/`
+- `logs/`
+- `scripts/` [shell]
+- `searxng/`
+- `vitrine/` [typescript]
+
+## Tech Stack
+
+- **Languages:** typescript, python, javascript, shell
+- **npm:** puppeteer-core, puppeteer-extra, puppeteer-extra-plugin-stealth, next, react, react-dom, @types/node, @types/react, typescript
+- **pypi:** fastapi, uvicorn, asyncpg, httpx, beautifulsoup4, pydantic, pydantic-settings, crewai, langchain-ollama, PyJWT (+2 more)

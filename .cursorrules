@@ -1,0 +1,105 @@
+# Project: lega
+
+## Project Context
+
+`lega` built with typescript, python, javascript, shell (monorepo architecture) with 8 module(s) and 21 dependencies.
+
+## Coding Rules
+
+- Use **mixed** naming convention
+- Use **absolute** imports
+- File organization: **flat**
+- Test files follow pattern: `test_*.py`
+- Design patterns in use: helper, model
+
+### Python Rules
+- All function signatures must have type hints
+- Use Google-style docstrings on all public functions and classes
+- Never use bare `except:`
+
+### JavaScript/TypeScript Rules
+- Prefer `const` over `let`, avoid `var`
+- Use async/await over raw promises where possible
+
+## Architecture
+
+- **Type:** monorepo
+- **Entry points:** `bvi-api/main.py`, `vitrine/backend/main.py`
+- **Infrastructure:** Docker
+
+## File Structure
+
+```
+bvi-api/
+  bvi-api/main.py.bak.1777540471
+  bvi-api/benchmark_models.sh
+  bvi-api/Dockerfile
+  bvi-api/main.py.backup.1780091903
+  bvi-api/package-lock.json
+  bvi-api/requirements.txt
+  bvi-api/package.json
+  bvi-api/kb_retriever.py
+  bvi-api/scraper_stealth.js
+  bvi-api/web_utils.py
+  ... and 6 more files
+bvi-dashboard/
+  bvi-dashboard/Dockerfile
+  bvi-dashboard/pnpm-lock.yaml
+  bvi-dashboard/tsconfig.json
+  bvi-dashboard/package.json
+  bvi-dashboard/app/components/ActivationsPage.tsx.bak.1777540475
+  bvi-dashboard/next.config.js
+  bvi-dashboard/app/page.tsx
+  bvi-dashboard/app/layout.tsx
+  bvi-dashboard/app/login/page.tsx
+  bvi-dashboard/app/components/AdminChatPage.tsx
+  ... and 11 more files
+bvi-shop/
+  bvi-shop/Dockerfile
+  bvi-shop/pnpm-lock.yaml
+  bvi-shop/tsconfig.json
+  bvi-shop/package.json
+  bvi-shop/next.config.js
+  bvi-shop/app/page.tsx
+  bvi-shop/app/layout.tsx
+docs/
+  docs/README.md
+  docs/reglementation/transport_portugal.md
+  docs/machines/cat_320d.md
+  docs/machines/volvo_ec220.md
+  docs/machines/komatsu_pc138.md
+  docs/machines/pelleteuse.md
+  docs/transport/guide_transport.md
+  docs/prix/marche_2026.md
+logs/
+  logs/qa-free-agents-v2-2026-05-30-12.json
+  logs/qa-free-agents-v2-2026-05-30-02.json
+  logs/qa-free-agents-2026-05-29-19.json
+  logs/qa-free-agents-v2-2026-05-29-22.json
+  logs/qa-free-agents-v2-2026-05-29-20.json
+scripts/
+  scripts/test_agents.sh
+  scripts/CLAUDE.md
+  scripts/test_free_agents.py
+searxng/
+  searxng/settings.yml
+  searxng/uwsgi.ini
+vitrine/
+  vitrine/init_db.sql
+  vitrine/backend/Dockerfile
+  vitrine/backend/requirements.txt
+  vitrine/frontend/Dockerfile
+  vitrine/frontend/pnpm-lock.yaml
+  vitrine/frontend/tsconfig.json
+  vitrine/frontend/package.json
+  vitrine/frontend/locales/ru.json
+  vitrine/frontend/locales/ar.json
+  vitrine/frontend/locales/en.json
+  ... and 41 more files
+```
+
+## Tech Stack
+
+- **Languages:** typescript, python, javascript, shell
+- **Key packages:** puppeteer-core, puppeteer-extra, puppeteer-extra-plugin-stealth, fastapi, uvicorn, asyncpg, httpx, beautifulsoup4, pydantic, pydantic-settings, crewai, langchain-ollama, PyJWT, python-multipart, edge-tts, next, react, react-dom, @types/node, @types/react
+  _(and 1 more)_
